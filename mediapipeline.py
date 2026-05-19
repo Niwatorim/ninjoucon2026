@@ -167,9 +167,10 @@ class MedaiPipeline():
       rotation_needed = target_angle-spine_angle
       cos_a, sin_a = np.cos(rotation_needed),np.sin(rotation_needed)
       
-      rot = np.array([ #rotation matrix
-        [cos_a,-sin_a],
-        [sin_a,cos_a]
+      rot = np.array([ 
+        [cos_a, -sin_a, 0],
+        [sin_a,  cos_a, 0],
+        [0,      0,     1]
       ])
       centered = {k: v - mid_hip for k,v in pose_dict.items()}
       rotated = {k: rot @ v for k,v in centered.items()}
@@ -180,7 +181,7 @@ class MedaiPipeline():
       values={}
       visibility={}
       for i in range(len(pose)):
-        values[i]=np.array([pose[i].x,pose[i].y]) # remove z for now
+        values[i]=np.array([pose[i].x,pose[i].y, pose[i].z]) #added z
         visibility[i] = getattr(pose[i],"visibility",1.0)
       return values,visibility
     
@@ -199,8 +200,8 @@ class MedaiPipeline():
         "R_elbow":   angle_if_vis([12, 14, 16], vec(n,14,16), vec(n,14,12)),
         "L_armpit":  angle_if_vis([11, 13, 23], vec(n,11,13), vec(n,11,23)),
         "L_elbow":   angle_if_vis([11, 13, 15], vec(n,13,15), vec(n,13,11)),
-        "chest_tilt":  angle_if_vis([11, 12], vec(n,12,11), np.array([1,0])),
-        "hip_tilt":    angle_if_vis([23, 24], vec(n,24,23), np.array([1,0])),
+        "chest_tilt":  angle_if_vis([11, 12], vec(n,12,11), np.array([1,0,0])),
+        "hip_tilt":    angle_if_vis([23, 24], vec(n,24,23), np.array([1,0,0])),
         "R_pelvis":  angle_if_vis([24, 26], vec(n,24,23), vec(n,24,26)),
         "L_pelvis":  angle_if_vis([23, 25], vec(n,23,24), vec(n,23,25)),
         "R_knee":    angle_if_vis([24, 26, 28], vec(n,26,24), vec(n,26,28)),
@@ -317,6 +318,8 @@ class MedaiPipeline():
 
     return np.linalg.norm(p1-p2) #distance between two vectors
   
+#----- functions for arrow
+  
   def normalize_pose(self, pose_data:list):
     """
     For Euclidean distance between student and teacher pose
@@ -325,18 +328,14 @@ class MedaiPipeline():
     """
     np_pose = {}
         
-    # Check if the input is a list (MediaPipe raw output) or a dictionary
     iterable = enumerate(pose_data) if isinstance(pose_data, list) else pose_data.items()
     
     for k, v in iterable:
-        # Check if it's a MediaPipe object and extract x, y
         if hasattr(v, 'x'):
-            np_pose[k] = np.array([v.x, v.y])
+            np_pose[k] = np.array([v.x, v.y, getattr(v, 'z', 0.0)])
         else:
-            np_pose[k] = np.array(v[:2]) # Fallback if it's already an array/tuple
+            np_pose[k] = np.array(v[:3])
 
-    # 2. Use np_pose for all the math instead of the raw input
-    # Because k is an integer index, np_pose[LM["r_hip"]] will grab the correct array
     mid_hip = (np_pose[LM["r_hip"]] + np_pose[LM["l_hip"]]) / 2
     mid_shoulder = (np_pose[LM["r_shoulder"]] + np_pose[LM["l_shoulder"]]) / 2
     spine = mid_shoulder - mid_hip
@@ -345,9 +344,10 @@ class MedaiPipeline():
     rotation_needed = target_angle-spine_angle
     cos_a, sin_a = np.cos(rotation_needed),np.sin(rotation_needed)
     
-    rot = np.array([ #rotation matrix
-      [cos_a,-sin_a],
-      [sin_a,cos_a]
+    rot = np.array([ 
+      [cos_a, -sin_a, 0],
+      [sin_a,  cos_a, 0],
+      [0,      0,     1]
     ])
     centered = {k: v - mid_hip for k,v in np_pose.items()}
     rotated = {k: rot @ v for k,v in centered.items()}
@@ -404,9 +404,11 @@ class MedaiPipeline():
                 "joint": j,
                 "start_point": (px_stu, py_stu),
                 "end_point": (px_teach, py_teach),
+                "start_point_3d": student_raw.tolist(),
+                "end_point_3d": target_raw.tolist(),
                 "error_magnitude": dist
             })
-            print(corrections)
+            print(corrections) #also consist 3d coords
 
     return corrections
   
@@ -433,9 +435,3 @@ class MedaiPipeline():
       )
     return image
   
-"""
-in main.py, separate difference and euclidean_distance
-try using difference and draw arrow in main.py directly
-if cannot, correct the difference func to its original state and make the euclidean func
-
-"""
