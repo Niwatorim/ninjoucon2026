@@ -5,6 +5,8 @@ from matplotlib import pyplot as plt
 
 import cv2
 
+#TODO: debug why no arrows appear
+
 # Example usage 1
 def compare_two_images(picture1="./image.png",picture2 = "./download.png"):
   """ TAKE TWO IMAGES AND COMPARE THE TWO, THEN SHOW"""
@@ -19,23 +21,31 @@ def compare_two_images(picture1="./image.png",picture2 = "./download.png"):
   teacher = human(t_angles,t_points)
   student = human(s_angles,s_points)
 
+  teacher_normalized, teacher_transform = pipeline.normalize_pose(pose)
+  student_normalized, student_transform = pipeline.normalize_pose(pose2) 
+
+  corrections_arrow = pipeline.euclidean_distance(teacher_normalized, student_normalized, student_transform, image2)
+
+  arrow_student = pipeline.draw_arrow(image2,corrections_arrow)
+
+  corrections = pipeline.difference(teacher,student,image2)
+
   fig, axes = plt.subplots(1, 2, figsize=(14, 7))
   axes[0].imshow(image)
   axes[0].set_title("Teacher",fontsize=13,fontweight="bold")
   axes[0].axis('off')
 
 
-  axes[1].imshow(image2)
+  axes[1].imshow(arrow_student)
   axes[1].set_title("Student",fontsize=13,fontweight="bold")
   axes[1].axis('off')
-
-  corrections = pipeline.difference(teacher,student,image2,axes[1])
 
   if corrections:
       summary = "\n".join(f"• {c}" for c in corrections)
       fig.text(0.5, 0.01, f"Corrections needed:\n{summary}",
               ha="center", fontsize=9, color="darkred",
               bbox=dict(boxstyle="round", fc="lightyellow", ec="red"))
+      
   else:
       fig.text(0.5, 0.01, "✓ Pose matches teacher!", ha="center",
               fontsize=11, color="green")
@@ -92,8 +102,8 @@ def check_keyposes(picture="./image.png"):
     return score,index
 
 _, index = check_keyposes("./image.png")
-compare_two_images("./image.png",f"./keyposes/{index}.png")
-
+# compare_two_images("./image.png",f"./keyposes/{index}.png")
+compare_two_images("./image.png","keypose_sample.jpeg")
 
 
 # import cv2

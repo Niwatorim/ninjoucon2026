@@ -214,9 +214,9 @@ class MedaiPipeline():
       diff = t_val - s_val
       label = JOINT_BONE[joint]["label"]
       if "elbow" in joint.lower() or "knee" in joint.lower():
-        return f"{label} : {"extend more" if diff < 0 else "bend more"} ({diff:+.1f})"
+        return f"{label} : {'extend more' if diff > 0 else 'bend more'} ({diff:+.1f})"
       elif "armpit" in joint.lower() or "pelvis" in joint.lower():
-        return f"{label}: {"raise" if diff < 0 else "lower"} ({diff:+.1f})"
+        return f"{label}: {'raise' if diff < 0 else 'lower'} ({diff:+.1f})"
       else:
         return f"{label}: adjust by {diff:+.1f}"
       
@@ -239,10 +239,14 @@ class MedaiPipeline():
         bone = JOINT_BONE[j]
         point_indx = bone["point"]
         hint = self._hint_location(j,t_val,s_val)
-        corrections.append({"hint":hint,"points":student.points[point_indx]})
 
-        px = float(student.points[point_indx][0]) * img_width
-        py = float(student.points[point_indx][1]) * img_height
+        px_stu = int(float(student.points[point_indx][0]) * img_width)
+        py_stu = int(float(student.points[point_indx][1]) * img_height)
+
+        px_teach = int(float(teacher.points[point_indx][0]) * img_width)
+        py_teach = int(float(teacher.points[point_indx][1]) * img_height)
+
+        corrections.append({"hint":hint,"points":student.points[point_indx], "start_point":(px_stu, py_stu), "end_point": (px_teach, py_teach)})
 
         # px_teach = float(teacher.points[point_indx][0]) * img_width
         # py_teach = float(teacher.points[point_indx][1]) * img_height
@@ -256,8 +260,8 @@ class MedaiPipeline():
         if ax is not None:
           ax.annotate(
             hint,
-            xy=(px,py),
-            xytext = (px+40,py+40),
+            xy=(px_stu,py_stu),
+            xytext = (px_stu+40,py_stu+40),
             fontsize=7,
             color="white",
             bbox=dict(boxstyle="round,pad=0.2", fc="red", alpha=0.7),
@@ -312,4 +316,126 @@ class MedaiPipeline():
     p2 = np.array(v2[:3])
 
     return np.linalg.norm(p1-p2) #distance between two vectors
+  
+  def normalize_pose(self, pose_data:list):
+    """
+    For Euclidean distance between student and teacher pose
+    Translate to origin, rotate spine to vertical and scale by torso length.
+    torso length is between midpoint of shoulder and midpoint of hip
+    """
+    np_pose = {}
+        
+    # Check if the input is a list (MediaPipe raw output) or a dictionary
+    iterable = enumerate(pose_data) if isinstance(pose_data, list) else pose_data.items()
+    
+    for k, v in iterable:
+        # Check if it's a MediaPipe object and extract x, y
+        if hasattr(v, 'x'):
+            np_pose[k] = np.array([v.x, v.y])
+        else:
+            np_pose[k] = np.array(v[:2]) # Fallback if it's already an array/tuple
 
+    # 2. Use np_pose for all the math instead of the raw input
+    # Because k is an integer index, np_pose[LM["r_hip"]] will grab the correct array
+    mid_hip = (np_pose[LM["r_hip"]] + np_pose[LM["l_hip"]]) / 2
+    mid_shoulder = (np_pose[LM["r_shoulder"]] + np_pose[LM["l_shoulder"]]) / 2
+    spine = mid_shoulder - mid_hip
+    spine_angle = np.arctan2(spine[1], spine[0])
+    target_angle = np.pi/2
+    rotation_needed = target_angle-spine_angle
+    cos_a, sin_a = np.cos(rotation_needed),np.sin(rotation_needed)
+    
+    rot = np.array([ #rotation matrix
+      [cos_a,-sin_a],
+      [sin_a,cos_a]
+    ])
+    centered = {k: v - mid_hip for k,v in np_pose.items()}
+    rotated = {k: rot @ v for k,v in centered.items()}
+
+    torso_length = np.linalg.norm(spine)
+    normalized_pose = {k: v/torso_length for k,v in rotated.items()}
+
+    transform_params = {
+      "mid_hip": mid_hip,
+      "rot": rot,
+      "torso_length": torso_length
+    }
+
+    return normalized_pose, transform_params
+  
+  def euclidean_distance(self,teacher:human,student:human, student_params:dict, image, ax=None, threshold = 0.3):
+    """
+    calculate 2D distance in normalized
+    then transform back to raw
+
+    some code is from difference
+    """
+    corrections = []
+    img_height, img_width = image.shape[:2]
+    
+    relevant_landmarks = set(self.lm.values())
+
+    common = set(teacher.keys()) & set(student.keys()) & relevant_landmarks
+
+    rot_inv = student_params["rot"].T
+
+    for j in common:
+        t_val = teacher[j]
+        s_val = student[j]
+
+        dist = np.linalg.norm(t_val - s_val)
+
+        if dist > threshold:
+            scaled_t = t_val * student_params["torso_length"]
+            unrotated_t = rot_inv @ scaled_t
+            target_raw = unrotated_t + student_params["mid_hip"]
+
+            scaled_s = s_val * student_params["torso_length"]
+            unrotated_s = rot_inv @ scaled_s
+            student_raw = unrotated_s + student_params["mid_hip"]
+
+            px_stu = int(student_raw[0] * img_width)
+            py_stu = int(student_raw[1] * img_height)
+
+            px_teach = int(target_raw[0] * img_width)
+            py_teach = int(target_raw[1] * img_height)
+
+            corrections.append({
+                "joint": j,
+                "start_point": (px_stu, py_stu),
+                "end_point": (px_teach, py_teach),
+                "error_magnitude": dist
+            })
+            print(corrections)
+
+    return corrections
+  
+  def draw_arrow(self, image, corrections:list[dict]):
+    """
+    use cv2.arrowedLine(image, start_point, end_point, color, thickness, line_type, shift, tipLength)
+    if theres correction:
+    take the point coordinate of that correction (raw) for both student and teacher
+    draw arrow using open cv, student -> teacher
+    """
+    for correction in corrections:
+      start_point = correction["start_point"]
+      end_point = correction["end_point"]
+
+      cv2.arrowedLine(
+        img=image,
+        pt1=start_point,
+        pt2=end_point,
+        color=(0,0,255),
+        thickness=2,
+        line_type=cv2.LINE_AA,
+        shift=0,
+        tipLength=0.2
+      )
+    return image
+  
+"""
+in main.py, separate difference and euclidean_distance
+try using difference and draw arrow in main.py directly
+if cannot, correct the difference func to its original state and make the euclidean func
+
+"""
