@@ -278,7 +278,6 @@ def calculate_delay(cap):
     delay = int(1000 / fps)
     return delay
 
-#Compare with key pose
 
 def compare_two_images(pose,picture2 = "./download.png"):
     """ TAKE TWO IMAGES AND COMPARE THE TWO, THEN SHOW"""
@@ -291,7 +290,6 @@ def compare_two_images(pose,picture2 = "./download.png"):
     teacher = human(t_angles,t_points)
     student = human(s_angles,s_points)
     corrections = pipeline.difference(teacher,student,image2)
-    print(corrections)
     final_corrections =[]
     for i in corrections:
         string_man = str(i["hint"]).split(":")[0]
@@ -303,60 +301,55 @@ def compare_two_images(pose,picture2 = "./download.png"):
         
 
         final_corrections.append({"body":string_man,
-                                  "direction": R.from_euler("x", 90, degrees=True).as_quat() if up == True else R.from_euler("x", -90, degrees=True).as_quat() })
-    
+                                  "direction": R.from_euler("z",-90, degrees=True).as_quat() if up == True else R.from_euler("z", 90, degrees=True).as_quat() })
+
     return final_corrections
     
-
-# Example usage 2
 async def check_keyposes(pose):
     """
     Check which of the images in keyposes is closest to the image: ./image.png
     """
 
-    pipeline = MedaiPipeline()
-    print("Check Keyposes")
-    pose_dictionary={}
-    for i,v in enumerate(pose[0]):
-        pose_dictionary[i] = [v.x,v.y,v.z,v.visibility]
+    # pipeline = MedaiPipeline()
+    # print("Check Keyposes")
+    # pose_dictionary={}
+    # for i,v in enumerate(pose[0]):
+    #     pose_dictionary[i] = [v.x,v.y,v.z,v.visibility]
 
-    with open("./keyposes/poses.json","r") as f:
-        stored:dict = json.load(f)
+    # with open("./keyposes/poses.json","r") as f:
+    #     stored:dict = json.load(f)
 
-    pose_dictionary = pipeline.normalize(pose_dictionary)
+    # pose_dictionary = pipeline.normalize(pose_dictionary)
 
-    for key, value in stored.items():
-        stored[key] = pipeline.normalize(value)
+    # for key, value in stored.items():
+    #     stored[key] = pipeline.normalize(value)
 
-    score = float("inf") #infinity
-    index = None
+    # score = float("inf") #infinity
+    # index = None
 
-    print(json.dumps(pose_dictionary,indent=3))  
+    # print(json.dumps(pose_dictionary,indent=3))  
 
-    for i,v in stored.items():
-        current_score = 0
-        valid_joints = 0
+    # for i,v in stored.items():
+    #     current_score = 0
+    #     valid_joints = 0
 
-        for j,values in v.items():
-            vector1 = pose_dictionary[int(j)]
-            vector2 = values
+    #     for j,values in v.items():
+    #         vector1 = pose_dictionary[int(j)]
+    #         vector2 = values
 
-            if vector1[3] > pipeline.visibility_threshold and vector2[3] > pipeline.visibility_threshold:
-                valid_joints +=1
-                current_score+=pipeline.compare_vectors(vector1,vector2)
+    #         if vector1[3] > pipeline.visibility_threshold and vector2[3] > pipeline.visibility_threshold:
+    #             valid_joints +=1
+    #             current_score+=pipeline.compare_vectors(vector1,vector2)
 
-        if valid_joints > 7: #if image not empty
-            average_score = current_score/valid_joints
+    #     if valid_joints > 7: #if image not empty
+    #         average_score = current_score/valid_joints
 
-            if average_score < score:
-                index = i
-                score = average_score
+    #         if average_score < score:
+    #             index = i
+    #             score = average_score
 
-
-    return compare_two_images(pose[0],f"./keyposes/{index}.png")
-
-# _, index = check_keyposes("./image.png")
-# compare_two_images("./image.png",f"./keyposes/{index}.png")
+    # return compare_two_images(pose[0],f"./keyposes/{index}.png") #For now make this pose 7
+    return compare_two_images(pose[0],f"./keyposes/{7}.png") #For now make this pose 7
 
 
 """
@@ -364,7 +357,6 @@ Logic: Every 3 seconds, check key pose
 compare key pose
 send coordinates of where fixes should be made
 """
-
 
 #Sending unity information
 
@@ -455,18 +447,9 @@ def human_analysis_segmentation(pose):
             l_ear=  pose_dict[8][0]
             r_ear = pose_dict[7][0]
             nose = pose_dict[0][0]
-            # ear_distance = (r_shoulder - l_shoulder)/2
-            # middle = (l_shoulder + r_shoulder)/2
             distance_right = np.linalg.norm(nose - r_ear)
             distance_left = np.linalg.norm(nose - l_ear)
             right_bias = False
-            # tilt = nose - middle
-            # if (abs(r_shoulder-nose) > abs(l_shoulder - nose)):
-            #     right_bias = True
-            # if right_bias:
-            #     angle = math.degrees(math.asin(np.clip(abs(tilt)/ear_distance,-1.0,1.0)))
-            # else:
-            #     angle = math.degrees(math.asin(-np.clip(abs(tilt)/ear_distance,-1.0,1.0)))
             angle = -math.degrees(math.atan2(distance_left - distance_right, distance_right + distance_left))
             quaternion = R.from_euler("y",angle*YAW_MULTIPLIER,degrees=True)
             # print("Yaw = ", angle * YAW_MULTIPLIER)
@@ -475,16 +458,6 @@ def human_analysis_segmentation(pose):
 
         def pitch():
             MULTIPLIER = 1.0
-            # right_side = np.array(pose_dict[7][:3]) - np.array(pose_dict[0][:3])
-            # left_side  = np.array(pose_dict[8][:3]) - np.array(pose_dict[0][:3])
-            # center = [1,0,0]
-
-            # right_angle = angle_between(right_side,center) 
-            # left_angle  = angle_between(left_side,center)
-
-            # avg = (right_angle + left_angle) / 2
-            # avg-=100
-
             nose = pose_dict[0]
             left_ear = pose_dict[7]
             right_ear = pose_dict[8]
@@ -494,45 +467,16 @@ def human_analysis_segmentation(pose):
             dz = mid_ear_z - nose[2] 
             pitch_rad = math.atan2(dy, dz)
             avg = math.degrees(pitch_rad) +15
-
             # print("Pitch = ", avg * MULTIPLIER)
             return R.from_euler("x", avg * MULTIPLIER, degrees=True).as_quat()
 
-        """
-        Example usage, but its broken
-
-        def roll():
-            ROLL_MULTIPLIER = 1.0
-            right_ear = pose_dict[7]
-            left_ear  = pose_dict[8]
-            right_shoulder = pose_dict[12]
-            left_shoulder  = pose_dict[11]
-            body_right = right_shoulder - left_shoulder  
-            ear_line = right_ear - left_ear              
-
-            # cross product gives sin of angle, dot gives cos of angle
-            cross = ear_line[0] * body_right[1] - ear_line[1] * body_right[0]
-            dot   = ear_line[0] * body_right[0] + ear_line[1] * body_right[1]
-            final_angle = math.degrees(math.atan2(cross, dot))
-
-            print("Roll = ", final_angle)
-            return R.from_euler("z", final_angle * ROLL_MULTIPLIER, degrees=True).as_quat()
-        
-        """
 
         def roll():
             #MAKE ROLL TO DO WITH CHEST ALLIGNMENT NOT X AND Y CUZ WHAT IF THE BODY ROTATES
             ROLL_MULTIPLIER = 1.3
             right_ear = pose_dict[7]
             left_ear = pose_dict[8]
-
             final_angle = -math.degrees(math.atan2(right_ear[1] - left_ear[1],right_ear[0] - left_ear[0]))
-            # middle_line = right_ear - left_ear
-            # center_line = [1,0]
-            # final_angle = angle_between(middle_line,center_line) 
-            # if right_ear[1] > left_ear[1]:
-            #     final_angle *= -1  
-            # print("FINAL ANGLE ",final_angle)
 
             # print("Roll = ", final_angle * ROLL_MULTIPLIER)
             quat = R.from_euler("z",final_angle*ROLL_MULTIPLIER,degrees=True)
@@ -543,11 +487,6 @@ def human_analysis_segmentation(pose):
         roll_angle = roll()
 
         return ( R.from_quat(yaw_angle)  * R.from_quat(pitch_angle) * R.from_quat(roll_angle)).as_quat().tolist()
-        # return ( R.from_quat(yaw_angle)).as_quat().tolist()
-        # return ( R.from_quat(pitch_angle)).as_quat().tolist()
-        # return (R.from_quat(roll_angle)).as_quat().tolist()
-
-
     
     pose_dict, visibility =create_dict(pose)
     # n=normalize_orientation(pose_dict) #need to stop using this to allow for rotations
@@ -645,11 +584,37 @@ async def main():
                     if current_time - last_keypose_check >= updatetime:
                         last_keypose_check = current_time
                         corrections = await check_keyposes(filtered_result.pose_landmarks)
+                        
+                        def make_quat(x, y, z, w):
+                            return {"x": x, "y": y, "z": z, "w": w}
+
+                        q = make_quat(0.0, 0.0, -0.7071067811865475, 0.7071067811865476)
+
+                        final ={
+                            "right_elbow":None,
+                            "right_forearm":None,
+                            "left_elbow":None,
+                            "left_forearm":None,
+                            "Chest":None,
+                            "hips":None,
+                            "right_knee":None,
+                            "left_knee":None,
+                            "right_ankle":q,
+                            "left_ankle":q
+                        }
+
+                        # for i in corrections:
+                        #     data_temp = i["direction"].tolist()
+                        #     final[i["body"]] = make_quat(data_temp[0],data_temp[1],data_temp[2],data_temp[3])
+                        
                         if len(corrections)>0:
                             correction_payload = {
-                                "corrections": {corrections[0]["body"]:quat_to_dict(corrections[0]["direction"].tolist())}
+                                "corrections": final
                             }
                         
+                            print("correction payload is as following")
+                            print(correction_payload)
+
                             sock.sendto(json.dumps(correction_payload).encode(), correction_server_address)
 
 
