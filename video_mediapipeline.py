@@ -278,7 +278,6 @@ def calculate_delay(cap):
     delay = int(1000 / fps)
     return delay
 
-
 def compare_two_images(pose,picture2 = "./download.png"):
     """ TAKE TWO IMAGES AND COMPARE THE TWO, THEN SHOW"""
 
@@ -291,18 +290,31 @@ def compare_two_images(pose,picture2 = "./download.png"):
     student = human(s_angles,s_points)
     corrections = pipeline.difference(teacher,student,image2)
     final_corrections =[]
+    reverse_LM ={
+        0:"nose",
+        11:"l_shoulder",12:"r_shoulder",
+        13: "l_elbow",14:"r_elbow",
+        15:"l_wrist",16:"r_wrist",
+        23:"l_hip",24:"r_hip",
+        25:"l_knee",26: "r_knee",
+        27:"l_ankle", 28:"r_ankle",
+    }
     for i in corrections:
-        string_man = str(i["hint"]).split(":")[0]
-        print(string_man)
-        up = False
-        if str(i).find("+") != -1: #for now check if upwards or downwards
-            print("arrow is upwards")
-            up = True
-        
-
-        final_corrections.append({"body":string_man,
-                                  "direction": R.from_euler("z",-90, degrees=True).as_quat() if up == True else R.from_euler("z", 90, degrees=True).as_quat() })
-
+        #i has the following
+        """
+        joint: number, based on LM from Mediapipe class
+        start_point_3d -> end_point_3d vector
+        rotation from pointing to avatars right side 90 degrees quaternion
+        """
+        temp_dict={
+            "body":reverse_LM[i["joint"]]
+        }
+        arrow_vector = np.array(i["end_point_3d"]) - np.array(i["start_point_3d"])
+        start_vector = np.array([-1,0,0])
+        arrow_vector = arrow_vector/np.linalg.norm(arrow_vector)
+        start_vector = start_vector/np.linalg.norm(start_vector)
+        rotation = R.align_vectors(arrow_vector,start_vector)
+        temp_dict["direction"] = rotation[0].as_quat()
     return final_corrections
     
 async def check_keyposes(pose):
@@ -392,25 +404,6 @@ def human_analysis_segmentation(pose):
         "l_knee": 25, "r_knee": 26,
         "l_ankle": 27, "r_ankle": 28,
     }
-
-    def normalize_orientation(pose_dict:dict):
-        """Rotate everything so that we make hip-> shoulder vertical to ignore rotations and things"""
-        mid_hip = (pose_dict[LM["r_hip"]] + pose_dict[LM["l_hip"]])/2
-        mid_shoulder = (pose_dict[LM["r_shoulder"]] + pose_dict[LM["l_shoulder"]])/2
-        spine = mid_shoulder - mid_hip
-        spine_angle = np.arctan2(spine[1], spine[0])
-        target_angle = np.pi/2
-        rotation_needed = target_angle-spine_angle
-        cos_a, sin_a = np.cos(rotation_needed),np.sin(rotation_needed)
-        
-        rot = np.array([ 
-            [cos_a, -sin_a, 0],
-            [sin_a,  cos_a, 0],
-            [0,      0,     1]
-        ])
-        centered = {k: v - mid_hip for k,v in pose_dict.items()}
-        rotated = {k: rot @ v for k,v in centered.items()}
-        return rotated
 
     #for creating human body angles
     def create_dict(pose):
@@ -603,9 +596,9 @@ async def main():
                             "left_ankle":q
                         }
 
-                        # for i in corrections:
-                        #     data_temp = i["direction"].tolist()
-                        #     final[i["body"]] = make_quat(data_temp[0],data_temp[1],data_temp[2],data_temp[3])
+                        for i in corrections:
+                            data_temp = i["direction"].tolist()
+                            final[i["body"]] = make_quat(data_temp[0],data_temp[1],data_temp[2],data_temp[3])
                         
                         if len(corrections)>0:
                             correction_payload = {
