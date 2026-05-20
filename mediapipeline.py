@@ -27,16 +27,16 @@ LM ={
 }
 
 JOINT_BONE={ #which bone to target for that joint
-    "R_armpit":   {"point": 14, "label": "right elbow"},
-    "R_elbow":    {"point": 16, "label": "right forearm"},
-    "L_armpit":   {"point": 13, "label": "left elbow"},
-    "L_elbow":    {"point": 15, "label": "left forearm"},
+    "R_armpit":   {"point": 14, "label": "right_elbow"},
+    "R_elbow":    {"point": 16, "label": "right_forearm"},
+    "L_armpit":   {"point": 13, "label": "left_elbow"},
+    "L_elbow":    {"point": 15, "label": "left_forearm"},
     "chest_tilt": {"point": 12, "label": "Chest"},
     "hip_tilt":   {"point": 24, "label": "hips"},
-    "R_pelvis":   {"point": 26, "label": "right knee"},
-    "L_pelvis":   {"point": 25, "label": "left knee"},
-    "R_knee":     {"point": 28, "label": "right ankle"},
-    "L_knee":     {"point": 27, "label": "left ankle"},
+    "R_pelvis":   {"point": 26, "label": "right_knee"},
+    "L_pelvis":   {"point": 25, "label": "left_knee"},
+    "R_knee":     {"point": 28, "label": "right_ankle"},
+    "L_knee":     {"point": 27, "label": "left_ankle"},
 }
 
 JOINT_WEIGHTS = { #weighting for how important this stuff is
