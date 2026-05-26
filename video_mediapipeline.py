@@ -10,14 +10,20 @@ from mediapipe.tasks.python.vision import drawing_styles
 from scipy.spatial.transform import Rotation as R
 import math
 import socket
-
+from typing import Any
 from mediapipeline import MedaiPipeline,human
 from OneEuroFilter import OneEuroFilter
 from pathlib import Path
 import time
 import asyncio
 
+RECORDING = False
+recording_apth = "./records.json"
 
+initial_format ={
+    "session_number":0,
+    "time_stamp":0
+}
 
 def human_analysis(pose):
     """
@@ -246,8 +252,6 @@ def compare_user_frame(user_pose, checkpoints, current_target_idx, match_thresho
         current_target_idx += 1
     
     return current_target_idx, False
-                    
-
 
 #---basic detection
 def draw_landmarks_on_image(rgb_image, detection_result):
@@ -288,6 +292,14 @@ def compare_two_images(pose,picture2 = "./download.png"):
     s_angles, s_points = pipeline.human_analysis(pose2)
     teacher = human(t_angles,t_points)
     student = human(s_angles,s_points)
+
+    teacher_normalized, teacher_transform = pipeline.normalize_pose(pose)
+    student_normalized, student_transform = pipeline.normalize_pose(pose2) 
+
+    corrections_arrow = pipeline.euclidean_distance(teacher_normalized, student_normalized, student_transform, image2)
+
+    arrow_student = pipeline.draw_arrow(image2,corrections_arrow)
+
     corrections = pipeline.difference(teacher,student,image2)
     final_corrections =[]
     reverse_LM ={
@@ -299,7 +311,8 @@ def compare_two_images(pose,picture2 = "./download.png"):
         25:"l_knee",26: "r_knee",
         27:"l_ankle", 28:"r_ankle",
     }
-    for i in corrections:
+
+    for i in corrections_arrow:
         #i has the following
         """
         joint: number, based on LM from Mediapipe class
@@ -310,23 +323,28 @@ def compare_two_images(pose,picture2 = "./download.png"):
             "body":reverse_LM[i["joint"]]
         }
         arrow_vector = np.array(i["end_point_3d"]) - np.array(i["start_point_3d"])
+        arrow_vector[1],arrow_vector[2]=-arrow_vector[2],arrow_vector[1] # some fixing in math and stuff etc, cuz the angles are switched from mediapipe -> unity
         start_vector = np.array([-1,0,0])
         arrow_vector = arrow_vector/np.linalg.norm(arrow_vector)
         start_vector = start_vector/np.linalg.norm(start_vector)
         rotation = R.align_vectors(arrow_vector,start_vector)
         temp_dict["direction"] = rotation[0].as_quat()
+        final_corrections.append(temp_dict)
+        # print(temp_dict)
     return final_corrections
     
-async def check_keyposes(pose):
+async def check_keyposes(pose): #change to just pose for now
     """
     Check which of the images in keyposes is closest to the image: ./image.png
     """
 
-    # pipeline = MedaiPipeline()
-    # print("Check Keyposes")
-    # pose_dictionary={}
-    # for i,v in enumerate(pose[0]):
-    #     pose_dictionary[i] = [v.x,v.y,v.z,v.visibility]
+    pipeline = MedaiPipeline()
+    if not pose:
+        image,pose = pipeline.mark_image("./image.png")
+    # pose_dictionary = {}
+    # for i,v in enumerate(pose):
+    #     pose_dictionary[i]=[v.x,v.y,v.z,v.visibility]
+
 
     # with open("./keyposes/poses.json","r") as f:
     #     stored:dict = json.load(f)
@@ -360,9 +378,9 @@ async def check_keyposes(pose):
     #             index = i
     #             score = average_score
 
-    # return compare_two_images(pose[0],f"./keyposes/{index}.png") #For now make this pose 7
-    return compare_two_images(pose[0],f"./keyposes/{7}.png") #For now make this pose 7
 
+    return compare_two_images(pose,f"./keyposes/{7}.png")
+    # return compare_two_images(pose[0],f"./keyposes/{index}.png") #For now make this pose 7
 
 """
 Logic: Every 3 seconds, check key pose
@@ -576,24 +594,24 @@ async def main():
                     
                     if current_time - last_keypose_check >= updatetime:
                         last_keypose_check = current_time
-                        corrections = await check_keyposes(filtered_result.pose_landmarks)
+                        corrections = await check_keyposes(filtered_world.pose_world_landmarks[0]) #for now remove this and make it empty
                         
                         def make_quat(x, y, z, w):
                             return {"x": x, "y": y, "z": z, "w": w}
 
                         q = make_quat(0.0, 0.0, -0.7071067811865475, 0.7071067811865476)
 
-                        final ={
-                            "right_elbow":None,
-                            "right_forearm":None,
-                            "left_elbow":None,
-                            "left_forearm":None,
+                        final:dict[str,Any] ={
+                            "r_elbow":None,
+                            "r_forearm":None,
+                            "l_elbow":None,
+                            "l_forearm":None,
                             "Chest":None,
                             "hips":None,
-                            "right_knee":None,
-                            "left_knee":None,
-                            "right_ankle":q,
-                            "left_ankle":q
+                            "r_knee":None,
+                            "l_knee":None,
+                            "r_ankle":None,
+                            "l_ankle":None
                         }
 
                         for i in corrections:
@@ -606,11 +624,9 @@ async def main():
                             }
                         
                             print("correction payload is as following")
-                            print(correction_payload)
+                            print(json.dumps(correction_payload,indent=4))
 
                             sock.sendto(json.dumps(correction_payload).encode(), correction_server_address)
-
-
 
                     payload = {
                         "segments" : {k:quat_to_dict(v) if k == "head_tilt" else vect_to_dict(v) 
@@ -620,11 +636,10 @@ async def main():
                     sock.sendto(json.dumps(payload).encode(), server_address)
                     # print(data)
 
-
                 annotated_frame = draw_landmarks_on_image(mediapipe_frame.numpy_view(), filtered_result)
                 bgr_annotated_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR)
-                cv2.namedWindow('Pose Estimation', cv2.WINDOW_NORMAL)
-                cv2.imshow('Pose Estimation', bgr_annotated_frame)
+                # cv2.namedWindow('Pose Estimation', cv2.WINDOW_NORMAL)
+                # cv2.imshow('Pose Estimation', bgr_annotated_frame)
             except Exception as e:
                 print("Error as ", e)
             

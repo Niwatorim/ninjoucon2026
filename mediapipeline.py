@@ -363,7 +363,7 @@ class MedaiPipeline():
 
     return normalized_pose, transform_params
   
-  def euclidean_distance(self,teacher:human,student:human, student_params:dict, image, ax=None, threshold = 0.3):
+  def euclidean_distance(self,teacher:dict,student:dict, student_params:dict, image, ax=None, threshold = 1.5):
     """
     calculate 2D distance in normalized
     then transform back to raw
@@ -408,7 +408,7 @@ class MedaiPipeline():
                 "end_point_3d": target_raw.tolist(),
                 "error_magnitude": dist
             })
-            print(corrections) #also consist 3d coords
+            # print(corrections) #also consist 3d coords
 
     return corrections
   
