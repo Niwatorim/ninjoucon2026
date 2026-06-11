@@ -59,5 +59,5 @@ if uploaded_file is not None or youtube_file is not None:
         "https://example.com",
         "https://example.com"
         ] #TODO: file paths to the generated teacher keyposes here
-        image_carousel(images=keypose_images, display_as_slider=True, width=700)
+        image_carousel(image_urls=keypose_images, display_as_slider=True, width=700)
 

@@ -4,6 +4,10 @@ from matplotlib import pyplot as plt
 import numpy as np
 import os
 import cv2
+# ============ CLAUDE GENERATED START ============
+import socket
+from video_mediapipeline import human_analysis_segmentation, vect_to_dict, quat_to_dict
+# ============ CLAUDE GENERATED END ============
 
 MATCH_THRESHOLD = 20.0
 REQUIRED_HOLD_FRAMES = 5
@@ -43,6 +47,13 @@ def interactive_training_session(teacher_video_path, student_camera=0):
     if not cap_teacher.isOpened() or not cap_student.isOpened():
         print("Error: Could not open video streams.")
         return
+
+    # ============ CLAUDE GENERATED START ============
+    # UDP sockets for sending data to Unity
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    segment_address = ("127.0.0.1", 5052)    # → RigManager.cs (drives avatar)
+    correction_address = ("127.0.0.1", 5053)  # → Spawner.cs (correction arrows)
+    # ============ CLAUDE GENERATED END ============
 
     # --- STATE MACHINE VARIABLES ---
     state = "PLAYING" 
@@ -84,8 +95,24 @@ def interactive_training_session(teacher_video_path, student_camera=0):
         if not ret_s:
             break
             
-        annotated_student, pose = pipeline.mark_frame(student_frame)
+        # ============ CLAUDE GENERATED START ============
+        annotated_student, pose, world_pose = pipeline.mark_frame(student_frame)
+        # ============ CLAUDE GENERATED END ============
         display_student = annotated_student if pose else student_frame
+
+        # ============ CLAUDE GENERATED START ============
+        # Send body segments to Unity every frame to drive the avatar
+        if world_pose is not None:
+            try:
+                segments = human_analysis_segmentation(world_pose)
+                segment_payload = {
+                    "segments": {k: quat_to_dict(v) if k == "head_tilt" else vect_to_dict(v)
+                                 for k, v in segments.items() if v is not None}
+                }
+                sock.sendto(json.dumps(segment_payload).encode(), segment_address)
+            except Exception as e:
+                print(f"Segment send error: {e}")
+        # ============ CLAUDE GENERATED END ============
 
         if state == "PAUSED" and pose:
             # 1. Record the frame immediately
@@ -126,6 +153,16 @@ def interactive_training_session(teacher_video_path, student_camera=0):
                         image=display_student
                     )
                     display_student = pipeline.draw_arrow(display_student, corrections)
+
+                    # ============ CLAUDE GENERATED START ============
+                    # Send correction arrows to Unity via UDP
+                    correction_payload = pipeline.corrections_to_unity_format(corrections)
+                    if any(v is not None for v in correction_payload["corrections"].values()):
+                        try:
+                            sock.sendto(json.dumps(correction_payload).encode(), correction_address)
+                        except Exception as e:
+                            print(f"Correction send error: {e}")
+                    # ============ CLAUDE GENERATED END ============
 
                     # Match Logic
                     if average_score < MATCH_THRESHOLD:
@@ -188,6 +225,10 @@ def interactive_training_session(teacher_video_path, student_camera=0):
     cap_teacher.release()
     cap_student.release()
     cv2.destroyAllWindows()
+
+    # ============ CLAUDE GENERATED START ============
+    sock.close()
+    # ============ CLAUDE GENERATED END ============
 
     # Save the gathered data to the organized file structure
     if session_record:

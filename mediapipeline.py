@@ -300,8 +300,8 @@ class MedaiPipeline():
       rotated = {k: rot @ v for k,v in centered.items()}
       return rotated
 
-    values = {k: v[:3] for k, v in smoothed_pose.items()}
-    visibility = {k: v[3] for k, v in smoothed_pose.items()}
+    values = {int(k): np.array(v[:3]) for k, v in smoothed_pose.items()}
+    visibility = {int(k): v[3] for k, v in smoothed_pose.items()}
     
     def angle_if_vis(idx_list,v1,v2):
       """Return the angle of the body part if visible or not"""
@@ -592,16 +592,23 @@ class MedaiPipeline():
     
     # If no human is detected, return the original frame and None
     if not pose_landmarker_result.pose_landmarks:
-      return frame, None
+      return frame, None, None
       
     annotated_image = self.draw_landmarks_on_image(image_3_channel, pose_landmarker_result)
     pose = pose_landmarker_result.pose_landmarks[0]
 
-    pose_dict, _ = self._pose_to_dict(pose) 
+    pose_dict = self._pose_to_dict(pose) 
     smoothed_pose = self.pose_filter.process(pose_dict)
     
+    # ============ CLAUDE GENERATED START ============
+    # Also return raw world landmarks for Unity avatar segment driving
+    world_landmarks = None
+    if pose_landmarker_result.pose_world_landmarks:
+      world_landmarks = pose_landmarker_result.pose_world_landmarks[0]
+    # ============ CLAUDE GENERATED END ============
+    
     image = cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR)
-    return image, smoothed_pose
+    return image, smoothed_pose, world_landmarks
 
 #----- playback functions
 
@@ -683,3 +690,58 @@ class MedaiPipeline():
 
     # Safely hand it off to the background thread
     self.ble_transmitter.send_data(payload)
+
+  # ============ CLAUDE GENERATED START ============
+  def corrections_to_unity_format(self, corrections):
+    """
+    Converts euclidean_distance() correction list into the JSON payload
+    that Unity's Spawner.cs / CorrectionData expects.
+
+    Reuses the same reverse_LM mapping and quaternion conversion logic
+    from video_mediapipeline.py's compare_two_images function.
+    """
+    # Maps mediapipe joint indices to Unity CorrectionData field names
+    reverse_LM = {
+        14: "r_elbow",     16: "r_forearm",
+        13: "l_elbow",     15: "l_forearm",
+        12: "r_shoulder",  11: "l_shoulder",
+        24: "r_hip",       23: "l_hip",
+        26: "r_knee",      25: "l_knee",
+        28: "r_ankle",     27: "l_ankle",
+    }
+
+    # Initialize all fields to None (Unity expects all keys present)
+    final = {
+        "r_elbow": None,   "r_forearm": None,
+        "l_elbow": None,   "l_forearm": None,
+        "r_shoulder": None, "l_shoulder": None,
+        "r_hip": None,     "l_hip": None,
+        "r_knee": None,    "l_knee": None,
+        "r_ankle": None,   "l_ankle": None,
+    }
+
+    for c in corrections:
+        joint_idx = c["joint"]
+        if joint_idx not in reverse_LM:
+            continue
+
+        arrow_vector = np.array(c["end_point_3d"]) - np.array(c["start_point_3d"])
+        # MediaPipe coords (X-right, Y-down, Z-toward-camera)
+        # → Unity coords (X-right, Y-up, Z-forward)
+        arrow_vector = np.array([arrow_vector[0], -arrow_vector[1], -arrow_vector[2]])
+        norm = np.linalg.norm(arrow_vector)
+        if norm < 1e-6:
+            continue
+        arrow_vector = arrow_vector / norm
+
+        start_vector = np.array([1.0, 0.0, 0.0])  # Unity's right direction
+        rotation = R.align_vectors([arrow_vector], [start_vector])  # 2D arrays required
+        q = rotation[0].as_quat()
+
+        final[reverse_LM[joint_idx]] = {
+            "x": float(q[0]), "y": float(q[1]),
+            "z": float(q[2]), "w": float(q[3])
+        }
+
+    return {"corrections": final}
+  # ============ CLAUDE GENERATED END ============
