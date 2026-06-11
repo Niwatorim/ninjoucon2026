@@ -9,6 +9,18 @@ import cv2
 from scipy.spatial.transform import Rotation as R
 import json
 
+#---- esp32 comms
+
+import logging
+import asyncio
+from dotenv import load_dotenv
+import os
+from bleak import BleakScanner, BleakClient
+import threading
+import queue
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 model_path = "./pose_landmarker_full.task"
 keyposes_path = "./keyposes"
@@ -50,6 +62,115 @@ JOINT_WEIGHTS = { #weighting for how important this stuff is
 ANGLE_THRESHOLD = 12
 VISIBILITY_THRESHOLD = 0.5 #must be above this value to be considered
 
+load_dotenv()
+
+CHARACTERISTIC_UUID = os.getenv("CHARACTERISTIC_UUID")
+SERVICE_UUID = os.getenv("SERVICE_UUID")
+ESP_DEVICE = None
+
+class ESPTransmit:
+  def __init__(self, target_device="NauESP32", char_uuid="CHARACTERISTIC_UUID"):
+    self.target_device = target_device
+    self.char_uuid = char_uuid
+    self.device = None
+  
+  def start(self):
+        """Starts the background BLE thread."""
+        self._running = True
+        self._thread = threading.Thread(target=self._run_async_loop, daemon=True)
+        self._thread.start()
+
+  def stop(self):
+      """Cleanly shuts down the thread."""
+      self._running = False
+      if self._thread:
+          self._thread.join()
+
+  def send_data(self, payload: str):
+      """Synchronous method called by OpenCV to safely pass data to the BLE thread."""
+      if not self.data_queue.full():
+          self.data_queue.put(payload)
+      else:
+          # If the queue is full (BLE is lagging), we drop the oldest frame 
+          # to ensure the wearable always gets the freshest pose data.
+          try:
+              self.data_queue.get_nowait()
+              self.data_queue.put(payload)
+          except queue.Empty:
+              pass
+  
+  def _run_async_loop(self):
+        """Wrapper to run the async BLE loop inside our thread."""
+        asyncio.run(self._ble_task())
+
+  async def _find_device(self) -> bool:
+      logger.info(f"Scanning for ESP devices matching {self.target_device}...")
+      try:
+          devices = await BleakScanner.discover(timeout=5.0)
+          for device in devices:
+              if device.name and device.name.lower() == self.target_device.lower():
+                  self.device = device
+                  logger.info(f"Found device: {self.device.name} - {self.device.address}")
+                  return True
+          logger.warning("No ESP device found")
+          return False
+      except Exception as e:
+          logger.error(f"Error in BLE Scanning: {e}")
+          return False
+
+  async def _ble_task(self):
+      found = await self._find_device()
+      if not found:
+          return
+
+      logger.info(f"Connecting to {self.device.name}")
+      try:
+          async with BleakClient(self.device.address) as client:
+              if client.is_connected:
+                  logger.info("Connected successfully! Starting transmission loop...")
+                  
+                  # --- CONTINUOUS CONTROL LOOP ---
+                  while self._running:
+                      try:
+                          # Non-blocking check for new data from OpenCV
+                          payload = self.data_queue.get_nowait()
+                          data = payload.encode('utf-8')
+                          
+                          await client.write_gatt_char(self.char_uuid, data, response=False)
+                          # logger.info(f"Sent: {payload}")
+                          
+                      except queue.Empty:
+                          # No new data, just sleep briefly to prevent CPU hogging
+                          await asyncio.sleep(0.05)
+                      except Exception as e:
+                          logger.error(f"Error writing to BLE: {e}")
+                          break
+              else:
+                  logger.warning("Failed connecting")
+      except Exception as e:
+          logger.error(f"Error connecting to client: {e}")
+  
+
+class EMAFilter:
+    def __init__(self, alpha=0.4):
+        self.alpha = alpha
+        self.previous_pose = {}
+
+    def process(self, current_pose_dict):
+        if not self.previous_pose:
+            self.previous_pose = current_pose_dict.copy()
+            return current_pose_dict
+
+        smoothed_pose = {}
+        for k, v in current_pose_dict.items():
+            if k in self.previous_pose:
+                smoothed_pose[k] = (self.alpha * v) + ((1.0 - self.alpha) * self.previous_pose[k])
+            else:
+                smoothed_pose[k] = v
+                
+        self.previous_pose = smoothed_pose.copy()
+        return smoothed_pose
+
 class human():
   def __init__(self,angles,points) -> None:
     self.angles: dict = angles
@@ -64,6 +185,9 @@ class MedaiPipeline():
     self.lm = LM
     self.joint_bone = JOINT_BONE
     self.joint_weights = JOINT_WEIGHTS
+    self.pose_filter = EMAFilter(alpha=0.5)
+    self.ble_transmit = ESPTransmit(target_device="NauESP32", char_uuid=CHARACTERISTIC_UUID)
+    self.ble_transmit.start()
 
 
   def _initialize(self):
@@ -127,7 +251,7 @@ class MedaiPipeline():
     image = cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR)
     return image, pose
   
-  def human_analysis(self,pose):
+  def human_analysis(self,smoothed_pose):
     """
     Takes landmarks and generates angles for the body by making body into vectors and finding angles between them
     """
@@ -176,14 +300,8 @@ class MedaiPipeline():
       rotated = {k: rot @ v for k,v in centered.items()}
       return rotated
 
-    #for creating human body angles
-    def create_dict(pose):
-      values={}
-      visibility={}
-      for i in range(len(pose)):
-        values[i]=np.array([pose[i].x,pose[i].y, pose[i].z]) #added z
-        visibility[i] = getattr(pose[i],"visibility",1.0)
-      return values,visibility
+    values = {k: v[:3] for k, v in smoothed_pose.items()}
+    visibility = {k: v[3] for k, v in smoothed_pose.items()}
     
     def angle_if_vis(idx_list,v1,v2):
       """Return the angle of the body part if visible or not"""
@@ -192,8 +310,7 @@ class MedaiPipeline():
       return None
 
     #------------
-    pose_dict ,visibility= create_dict(pose)
-    n = normalize_orientation(pose_dict=pose_dict) #normalize the orientation
+    n = normalize_orientation(pose_dict=values) #normalize the orientation
 
     body_angles = {
         "R_armpit":  angle_if_vis([12, 14, 24], vec(n,12,14), vec(n,12,24)),
@@ -208,7 +325,7 @@ class MedaiPipeline():
         "L_knee":    angle_if_vis([23, 25, 27], vec(n,25,23), vec(n,25,27)),
     }
 
-    return body_angles,pose_dict
+    return body_angles,values
 
   def _hint_location(self,joint,t_val,s_val):
       """TO give the hints on what the angle is"""
@@ -298,9 +415,9 @@ class MedaiPipeline():
 
     for k,v in pose.items():
       pose[k] = [
-        v[0]/normalizer,
-        v[1]/normalizer,
-        v[2]/normalizer,
+        (v[0] - hip[0])/normalizer,
+        (v[1] - hip[1])/normalizer,
+        (v[2] - hip[2])/normalizer,
         v[3]
       ]
     return pose
@@ -320,7 +437,7 @@ class MedaiPipeline():
   
 #----- functions for arrow
   
-  def normalize_pose(self, pose_data:list):
+  def normalize_pose(self, pose_data):
     """
     For Euclidean distance between student and teacher pose
     Translate to origin, rotate spine to vertical and scale by torso length.
@@ -328,32 +445,40 @@ class MedaiPipeline():
     """
     np_pose = {}
         
-    iterable = enumerate(pose_data) if isinstance(pose_data, list) else pose_data.items()
+    iterable = pose_data.items() if isinstance(pose_data, dict) else enumerate(pose_data)
     
     for k, v in iterable:
+        int_k = int(k) # <--- FIX: Force the key to be an integer here
+        
         if hasattr(v, 'x'):
-            np_pose[k] = np.array([v.x, v.y, getattr(v, 'z', 0.0)])
+            np_pose[int_k] = np.array([v.x, v.y, getattr(v, 'z', 0.0)])
         else:
-            np_pose[k] = np.array(v[:3])
+            np_pose[int_k] = np.array(v[:3])
 
+    # Now this will work properly because the keys are guaranteed to be integers
     mid_hip = (np_pose[LM["r_hip"]] + np_pose[LM["l_hip"]]) / 2
     mid_shoulder = (np_pose[LM["r_shoulder"]] + np_pose[LM["l_shoulder"]]) / 2
     spine = mid_shoulder - mid_hip
     spine_angle = np.arctan2(spine[1], spine[0])
     target_angle = np.pi/2
-    rotation_needed = target_angle-spine_angle
-    cos_a, sin_a = np.cos(rotation_needed),np.sin(rotation_needed)
+    rotation_needed = target_angle - spine_angle
+    cos_a, sin_a = np.cos(rotation_needed), np.sin(rotation_needed)
     
     rot = np.array([ 
       [cos_a, -sin_a, 0],
       [sin_a,  cos_a, 0],
       [0,      0,     1]
     ])
-    centered = {k: v - mid_hip for k,v in np_pose.items()}
-    rotated = {k: rot @ v for k,v in centered.items()}
+    centered = {k: v - mid_hip for k, v in np_pose.items()}
+    rotated = {k: rot @ v for k, v in centered.items()}
 
     torso_length = np.linalg.norm(spine)
-    normalized_pose = {k: v/torso_length for k,v in rotated.items()}
+    
+    # Protect against division by zero just in case
+    if torso_length == 0:
+        torso_length = 1.0 
+        
+    normalized_pose = {k: v/torso_length for k, v in rotated.items()}
 
     transform_params = {
       "mid_hip": mid_hip,
@@ -363,7 +488,7 @@ class MedaiPipeline():
 
     return normalized_pose, transform_params
   
-  def euclidean_distance(self,teacher:human,student:human, student_params:dict, image, ax=None, threshold = 0.3):
+  def euclidean_distance(self,teacher: dict, student: dict, student_params:dict, image, ax=None, threshold = 0.3):
     """
     calculate 2D distance in normalized
     then transform back to raw
@@ -400,6 +525,10 @@ class MedaiPipeline():
             px_teach = int(target_raw[0] * img_width)
             py_teach = int(target_raw[1] * img_height)
 
+            px_dist = np.linalg.norm(np.array([px_stu, py_stu]) - np.array([px_teach, py_teach]))
+            if px_dist < 15.0: # If the arrow is less than 15 pixels long, skip it
+              continue
+
             corrections.append({
                 "joint": j,
                 "start_point": (px_stu, py_stu),
@@ -435,3 +564,122 @@ class MedaiPipeline():
       )
     return image
   
+  def _pose_to_dict(self, pose):
+    """
+    Helper to convert MediaPipe pose to a dictionary of numpy arrays.
+    Returns format: { id: np.array([x, y, z, visibility]) }
+    """
+    pose_dict = {}
+    for i in range(len(pose)):
+      pose_dict[i] = np.array([
+        pose[i].x, 
+        pose[i].y, 
+        pose[i].z, 
+        getattr(pose[i], "visibility", 1.0)
+      ])
+    return pose_dict
+  
+  def mark_frame(self, frame):
+    """
+    Create the landmarks directly from an OpenCV frame (numpy array)
+    """
+    # Convert BGR (OpenCV default) to RGB
+    image_3_channel = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    
+    # Create MediaPipe Image from numpy array
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_3_channel)
+    pose_landmarker_result = self.landmarker.detect(mp_image)
+    
+    # If no human is detected, return the original frame and None
+    if not pose_landmarker_result.pose_landmarks:
+      return frame, None
+      
+    annotated_image = self.draw_landmarks_on_image(image_3_channel, pose_landmarker_result)
+    pose = pose_landmarker_result.pose_landmarks[0]
+
+    pose_dict, _ = self._pose_to_dict(pose) 
+    smoothed_pose = self.pose_filter.process(pose_dict)
+    
+    image = cv2.cvtColor(annotated_image, cv2.COLOR_RGB2BGR)
+    return image, smoothed_pose
+
+#----- playback functions
+
+  def serialize_pose(self, pose):
+        """
+        Converts MediaPipe landmarks or NumPy arrays into standard Python lists 
+        so they can be easily saved to a JSON file.
+        """
+        serializable_pose = {}
+        if isinstance(pose, dict):
+            for k, v in pose.items():
+                if isinstance(v, np.ndarray):
+                    serializable_pose[int(k)] = v.tolist()
+                else:
+                    serializable_pose[int(k)] = list(v)
+        else:
+            for i, v in enumerate(pose):
+                serializable_pose[i] = [v.x, v.y, getattr(v, "z", 0.0), getattr(v, "visibility", 1.0)]
+        return serializable_pose
+  
+  def save_student_record(self, video_name, session_records):
+        """
+        Organizes and saves the student session data based 
+        on video name and the exact time the training was taken.
+        """
+        import datetime
+        import os
+
+        # Create timestamp for session organization
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Organize by video name, then timestamp
+        base_name = os.path.basename(video_name).split('.')[0]
+        save_dir = f"./student_records/{base_name}"
+        os.makedirs(save_dir, exist_ok=True)
+        
+        file_path = f"{save_dir}/session_{timestamp}.json"
+        
+        payload = {
+            "video_source": video_name,
+            "timestamp": timestamp,
+            "records": session_records # Contains keyposes, correction angles, and arrows
+        }
+        
+        with open(file_path, "w") as f:
+            json.dump(payload, f, indent=4)
+        
+        print(f"Student record saved successfully to: {file_path}")
+        return file_path
+  
+  #----- deal with this later
+
+  def transmit_haptic_data(self, corrections):
+    """
+    Takes the pose corrections, formats them into motor/vibration 
+    angles, and pushes them to the ESP32.
+    """
+    if not corrections:
+        return
+        
+    # Example: Extract the specific angles you need from the corrections list.
+    # This logic depends entirely on how your wearable is mapped.
+    pan_angle = 90  # Default neutral
+    tilt_angle = 180 # Default neutral
+
+    for c in corrections:
+        # Assuming 'c' is the dictionary from your euclidean_distance or difference method
+        joint_name = c.get("joint", "")
+        error_val = c.get("error_magnitude", 0)
+        
+        # TODO: Map your specific joints to specific hardware angles here
+        if joint_name == "chest_tilt":
+            tilt_angle = int(180 - error_val) # example mapping
+        elif joint_name == "R_shoulder":
+            pan_angle = int(90 + error_val)   # example mapping
+
+    # Format the payload exactly as your ESP32 expects it
+    payload = f"{pan_angle},{tilt_angle}"
+
+    # Safely hand it off to the background thread
+    self.ble_transmitter.send_data(payload)
