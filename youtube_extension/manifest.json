@@ -1,0 +1,15 @@
+{
+    "manifest_version":3,
+    "name":"motion_learn",
+    "version":"1.0.0",
+    "permissions":["tabs"],
+    "background":{
+        "service_worker":"background.js"
+    },
+    "content_scripts":[
+        {
+            "matches":["https://www.youtube.com/watch*"],
+            "js":["Content.js"]
+        }
+    ]
+}
