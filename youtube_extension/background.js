@@ -23,6 +23,13 @@ function connectWebSocket(){
     socket.onerror = (error) => {
         console.error("WEBSOCKET ERROR: ",error);
     }
-
 }
+
+// Forward messages from Content.js back to Python
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(message));
+    }
+});
+
 connectWebSocket();

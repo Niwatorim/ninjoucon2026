@@ -36,6 +36,14 @@ latest_seek_time = 0.0
 action = None
 is_seeking = False
 mini_seeking = False
+timestamp = None
+
+#load time stamps:
+with open("./keyposes/teacher_timestamps.json","r") as f:
+    timestamps = json.dumps(f)
+
+pose_id = 0
+
 
 def draw_landmarks_on_image(rgb_image, detection_result):
   pose_landmarks_list = detection_result.pose_landmarks
@@ -145,7 +153,7 @@ def find_fingy(hand_detection_result):
     angle = np.rad2deg(np.arccos(dot_product))
     return angle
 
-async def stream(websocket):
+async def stream_mini(websocket):
     global latest_seek_time
     global action
     global is_seeking
@@ -200,6 +208,37 @@ async def stream(websocket):
             
     except websockets.exceptions.ConnectionClosedOK:
         print("Chrome extension disconnected")
+
+async def stream(websocket):
+    """ For the main """
+    global action
+    global timestamp
+    global pose_id
+    global timestamps
+    print("Chrome connected")
+    pause = False
+    command = None
+    prev_action = None 
+    try:
+        while True:
+            await asyncio.sleep(0.05) 
+            
+            command = None
+
+            # Only process action if it just changed
+            if action != prev_action:                
+                if action == "play_until":
+                    command = "play_until"
+                    timestamp = timestamps[pose_id]
+            payload = {
+                "action":command,
+                "timestamp":time.time(),
+                "target_time":timestamp
+            }
+            await websocket.send(json.dumps(payload))
+    except websockets.exceptions.ConnectionClosedOK:
+        print("Chrome extension disconnected")
+
 
 async def process_info():
     base_options = python.BaseOptions(model_asset_path='./gesture_recognizer.task')
@@ -280,7 +319,7 @@ async def process_info():
     cv2.destroyAllWindows()
 
 async def main():
-    server = await websockets.serve(stream,"localhost",8765)
+    server = await websockets.serve(stream_mini,"localhost",8765)
     await process_info()
     server.close()
     await server.wait_closed()    

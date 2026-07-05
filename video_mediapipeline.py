@@ -11,7 +11,7 @@ from scipy.spatial.transform import Rotation as R
 import math
 import socket
 
-from mediapipeline import MedaiPipeline,human
+from utilities.mediapipeline import MedaiPipeline,human
 from OneEuroFilter import OneEuroFilter
 from pathlib import Path
 import time
@@ -242,7 +242,6 @@ def compare_user_frame(user_pose, checkpoints, current_target_idx, match_thresho
     diff = get_pose_difference(user_pose, target_pose)
 
     if diff <= match_threshold:
-        print(f"Hit checkpoint {current_target_idx}, nice!")
         current_target_idx += 1
     
     return current_target_idx, False
@@ -291,11 +290,9 @@ def compare_two_images(pose,picture2 = "./download.png"):
     teacher = human(t_angles,t_points)
     student = human(s_angles,s_points)
     corrections = pipeline.difference(teacher,student,image2)
-    print(corrections)
     final_corrections =[]
     for i in corrections:
         string_man = str(i["hint"]).split(":")[0]
-        print(string_man)
         up = False
         if str(i).find("+") != -1: #for now check if upwards or downwards
             print("arrow is upwards")
@@ -331,7 +328,6 @@ async def check_keyposes(pose):
     score = float("inf") #infinity
     index = None
 
-    print(json.dumps(pose_dictionary,indent=3))  
 
     for i,v in stored.items():
         current_score = 0

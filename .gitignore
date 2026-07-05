@@ -1,2 +1,9 @@
 venv/
+ninjou/
 __pycache__/
+student_records/
+fixes/
+youtube_extension.zip
+*.task
+./keyposes/*
+./captured_vid.mp4
