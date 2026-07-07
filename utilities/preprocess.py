@@ -5,8 +5,9 @@ import os
 import json
 import cv2
 import numpy as np
-from video_mediapipeline import get_pose_difference, normalize_3d_landmarks
+from video_mediapipeline import get_pose_difference, normalize_3d_landmarks, human_analysis
 from utilities.mediapipeline import MedaiPipeline
+from scipy.ndimage import gaussian_filter1d
 
 def generate_keyposes(video_name:str, output_path:str = "keyposes/teacher_keyposes.json", output_path_time:str = "keyposes/teacher_timestamps.json") -> None:
     """
@@ -86,17 +87,258 @@ def generate_keyposes(video_name:str, output_path:str = "keyposes/teacher_keypos
         json.dump(timestamps,f,indent=4)
     print("Keyposes created, number of keyposes: ",len(keyposes))
 
-"""
-For every frame, calculate joint angle velocity + location -> two dictionaries
-
-Apply gaussian filtering
-
-Normalize each value
-
-Calculate energy from E = (w1 * vT) + (w2 * vJ)
-
-Find local minima -> compare thru everything (linear search), if frame -1 > current frame < frame +1, its a local minima. If the change is of a value greater than threshold, its a keypose
-
-"""
-
 #Loop through video and per frame have all values for 33 points
+
+def generate_keyposes_new(video_name:str, output_path:str = "keyposes/teacher_keyposes.json", output_path_time:str = "keyposes/teacher_timestamps.json", frame_skip:int = 2):
+    """
+    Energy-based keypose extraction for martial arts, dance, and dynamic movement videos.
+
+    For every frame:
+      1. Compute joint translational velocity (vJ) and angular velocity (vT)
+      2. Apply Gaussian smoothing
+      3. Normalize each signal to [0, 1]
+      4. Calculate combined energy: E = wT*vT + wJ*vJ (weighted by joint importance)
+      5. Find movement peaks (moments of maximum motion), then locate the
+         nearest valley after each peak — this is the "held pose" right after
+         a significant movement, which is the actual keypose.
+
+    :param video_name: Path for Video
+    :type video_name: str
+    :param frame_skip: Process every Nth frame for speed (default 2). Set to 1 to process all frames.
+    :type frame_skip: int
+    """
+    from scipy.signal import find_peaks, argrelextrema
+
+    pipeline = MedaiPipeline()
+    cap = cv2.VideoCapture(video_name)
+
+    joints:dict = {}  # structure is {frame_id: {0:.., -> 33:...}}
+    frame_id = 0
+    print("Processing video")
+    frame_times = {}
+
+    #thresholds:
+    prominence = 0.08
+    min_peak_distance_multiplier= 0.15
+    min_keyframe_distance_multiplier = 0.2
+
+
+    raw_joints_list = []
+    raw_angles_list = []
+    valid_frame_ids = []
+    last_valid_angles = {}
+
+    joint_weights = np.array([
+        0.1,  # 0  - nose
+        0.0,  # 1  - left eye (inner)
+        0.0,  # 2  - left eye
+        0.0,  # 3  - left eye (outer)
+        0.0,  # 4  - right eye (inner)
+        0.0,  # 5  - right eye
+        0.0,  # 6  - right eye (outer)
+        0.0,  # 7  - left ear
+        0.0,  # 8  - right ear
+        0.0,  # 9  - mouth (left)
+        0.0,  # 10 - mouth (right)
+        1.5,  # 11 - left shoulder
+        1.5,  # 12 - right shoulder
+        1.2,  # 13 - left elbow
+        1.2,  # 14 - right elbow
+        1.4,  # 15 - left wrist
+        1.4,  # 16 - right wrist
+        0.3,  # 17 - left pinky
+        0.3,  # 18 - right pinky
+        0.3,  # 19 - left index
+        0.3,  # 20 - right index
+        0.3,  # 21 - left thumb
+        0.3,  # 22 - right thumb
+        1.5,  # 23 - left hip
+        1.5,  # 24 - right hip
+        1.2,  # 25 - left knee
+        1.2,  # 26 - right knee
+        1.2,  # 27 - left ankle
+        1.2,  # 28 - right ankle
+        0.5,  # 29 - left heel
+        0.5,  # 30 - right heel
+        0.3,  # 31 - left foot index
+        0.3,  # 32 - right foot index
+    ])
+
+    process_counter = 0
+
+    while cap.isOpened():
+        frame_id += 1
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Frame skipping
+        process_counter += 1
+        if process_counter % frame_skip != 0:
+            continue
+
+        time_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
+        timestamp_sec = time_ms / 1000.0  
+        frame_times[frame_id] = timestamp_sec
+
+        # Downscale for speed — 
+        frame = cv2.resize(frame, (640, 480))
+
+        # Detect pose landmarks
+        _, pose, world_pose, smoothed_world = pipeline.mark_frame(frame)
+
+        if world_pose is not None and smoothed_world is not None:
+            joints[str(frame_id)] = pipeline.serialize_pose(world_pose)
+            frame_joints = [smoothed_world[key][:3] for key in sorted(smoothed_world.keys())]
+            raw_joints_list.append(frame_joints)
+            valid_frame_ids.append(frame_id)
+
+            # Compute joint angles once per frame
+            angles_dict = human_analysis(world_pose)
+            frame_angles = []
+            for key in sorted(angles_dict.keys()):
+                val = angles_dict[key]
+                if val is None:
+                    # use the last known valid angle (or identity quaternion if first frame)
+                    val = last_valid_angles.get(key, [0.0, 0.0, 0.0, 1.0])
+                else:
+                    last_valid_angles[key] = val
+                frame_angles.append(val)
+
+            raw_angles_list.append(frame_angles)
+
+    cap.release()
+    print(f"Processed {len(valid_frame_ids)} frames out of {frame_id} total (skip={frame_skip})")
+
+    if len(raw_joints_list) < 3:
+        print("Not enough valid frames to detect keyposes")
+        return
+
+    joints_array = np.array(raw_joints_list)  # shape: (N, 33, 3)
+    angles_array = np.array(raw_angles_list)   # shape: (N, num_angles, 4)
+
+    # velocities ---
+
+    # velocity change
+    xyz_differences = np.diff(joints_array, axis=0)            
+    joint_distances = np.linalg.norm(xyz_differences, axis=2)   # (N-1, 33)
+    # Apply per-joint weights so that shoulders/hips/knees matter more than face
+    weighted_distances = joint_distances * joint_weights[np.newaxis, :]
+    vJ = weighted_distances.sum(axis=1) / joint_weights.sum()   # weighted mean
+
+    # Angular velocity
+    angle_differences = np.diff(angles_array, axis=0)
+    quaternion_distances = np.linalg.norm(angle_differences, axis=2)
+    vT = quaternion_distances.mean(axis=1)
+
+    # Gaussian smoothing 
+    sigma = 3  # slightly wider kernel for smoother signal on dynamic movements
+    filtered_vJ = gaussian_filter1d(vJ, sigma=sigma)
+    filtered_vT = gaussian_filter1d(vT, sigma=sigma)
+
+    print("Gaussian smoothing done")
+
+    # normalize
+    def safe_normalize(arr):
+        min_val, max_val = arr.min(), arr.max()
+        range_val = max_val - min_val
+        if range_val < 1e-9:
+            return np.zeros_like(arr)
+        return (arr - min_val) / range_val
+
+    finalVJ = safe_normalize(filtered_vJ)
+    finalVT = safe_normalize(filtered_vT)
+
+    print("Normalization done")
+
+    # --- Calculate combined energy ---
+    wT = 0.4  # angular velocity weight (less noisy)
+    wJ = 0.6  # translational velocity weight (more informative for full-body movement)
+    Energy = (wT * finalVT) + (wJ * finalVJ)
+
+    # --- Peak-then-valley keypose detection ---
+    # Step 1: Find peaks in the energy signal (moments of maximum movement).
+    #         `prominence` ensures we only pick peaks that stand out significantly
+    #         above their surrounding baseline, filtering out minor jitter.
+    #         `distance` enforces a minimum gap between peaks (in frames).
+    # Re-open briefly just to get FPS since we released cap above
+    cap_info = cv2.VideoCapture(video_name)
+    fps = cap_info.get(cv2.CAP_PROP_FPS)
+    cap_info.release()
+    if fps <= 0:
+        fps = 30.0
+    effective_fps = fps / frame_skip
+    min_peak_distance = max(int(effective_fps * min_peak_distance_multiplier), 2)  # at least 0.15 seconds apart
+
+    peaks, peak_props = find_peaks(Energy, prominence=prominence, distance=min_peak_distance)
+    print(f"Found {len(peaks)} movement peaks")
+
+    # For each peak, find the nearest local minimum after it.
+    all_minima = argrelextrema(Energy, np.less, order=max(int(effective_fps * 0.15), 2))[0]
+    all_minima_set = set(all_minima)
+
+    keyframes = []
+    min_keyframe_distance = max(int(effective_fps * min_keyframe_distance_multiplier), 3)  # minimum gap between keyposes
+
+    for peak_idx in peaks:
+        # Find the first local minimum after this peak
+        best_valley = None
+        for m in sorted(all_minima):
+            if m > peak_idx:
+                best_valley = m
+                break
+
+        if best_valley is None:
+            best_valley = peak_idx
+
+        if keyframes and (best_valley - keyframes[-1]) < min_keyframe_distance:
+            continue
+
+        # Bounds check: np.diff reduces length by 1, so valid indices are [0, len(Energy)-1]
+        # Energy[i] represents the transition between valid_frame_ids[i] and valid_frame_ids[i+1]
+        # The keypose is the frame AFTER the transition, so use i+1
+        pose_index = best_valley + 1  # Off-by-one fix for np.diff
+        if pose_index < len(valid_frame_ids):
+            keyframes.append(best_valley)
+
+    # Always include the very first frame as keypose 0 (initial stance)
+    if keyframes and keyframes[0] != 0:
+        keyframes.insert(0, 0)
+    elif not keyframes and len(valid_frame_ids) > 0:
+        keyframes = [0]
+
+    print(f"Selected {len(keyframes)} keyposes")
+
+    # --- Build output dictionaries ---
+    timestamps = {}
+    keyposes = {}
+    for idx, key in enumerate(keyframes):
+        # Map energy index to the actual frame (off-by-one corrected)
+        pose_frame_idx = min(key + 1, len(valid_frame_ids) - 1)
+        actual_frame_id = valid_frame_ids[pose_frame_idx]
+        timestamps[idx] = frame_times[actual_frame_id]
+        keyposes[idx] = joints[str(actual_frame_id)]
+
+    print("Done calculating energy")
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(output_path_time), exist_ok=True)
+
+    with open(output_path, "w") as f:
+        json.dump(keyposes, f, indent=4)
+    with open(output_path_time, "w") as f:
+        json.dump(timestamps, f, indent=4)
+    print("Keyposes created, number of keyposes: ", len(keyposes))
+
+    print("Saving keyframe images...")
+    cap2 = cv2.VideoCapture(video_name)
+    os.makedirs("keyposes", exist_ok=True)
+    for idx, key in enumerate(keyframes):
+        pose_frame_idx = min(key + 1, len(valid_frame_ids) - 1)
+        actual_frame_id = valid_frame_ids[pose_frame_idx]
+        cap2.set(cv2.CAP_PROP_POS_FRAMES, int(actual_frame_id) - 1)
+        ret, frame = cap2.read()
+        if ret:
+            cv2.imwrite(f"keyposes/pose_{idx}.png", frame)
+    cap2.release()
+    print("All keyframe images saved!")

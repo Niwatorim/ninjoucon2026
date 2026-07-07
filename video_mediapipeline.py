@@ -618,7 +618,7 @@ async def main():
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB) # if the image is 2D (grayscale), convert GRAY to RGB
             else:
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) # if the image is 3D (standard color), convert BGR to RGB
-
+            
             mediapipe_frame = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame) # convert np array to mediapipe Image object
             current_time = time.time()
             timestamp_ms = int((current_time - start_time) * 1000)

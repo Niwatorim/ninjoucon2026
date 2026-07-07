@@ -34,10 +34,10 @@ if url != "n":
         print(f"failed to download: {e}")
 
     #split process into keyposes
-    from utilities.preprocess import generate_keyposes
+    from utilities.preprocess import generate_keyposes_new
     print("Generating keyframes")
     try:
-        generate_keyposes(video_filename)
+        generate_keyposes_new(video_filename)
     except Exception as e:
         print(f"failed to generate keyframes: {e}")
 
