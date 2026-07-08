@@ -72,17 +72,23 @@ except FileNotFoundError:
     print("teacher_timestamps.json not found, make sure generate_keyposes worked.")
     timestamps = {}
 
+#check checkpoints
+import asyncio
+import websockets
 from utilities.main_pipeline import interactive_training_session
-
-async def stream(websocket):
-    print("Extension Connected!")
-    video_name = url
-    await interactive_training_session(websocket, timestamps, video_name)
+from utilities.youtube_downloader import get_checkpoint_boundary
 
 async def main():
+    point = await get_checkpoint_boundary(timestamps)
+    
+    async def stream(websocket):
+        print("Extension Connected!")
+        video_name = url
+        await interactive_training_session(websocket, timestamps, video_name, point)
+
     print("Starting websocket server on ws://localhost:8765")
-    server = await websockets.serve(stream, "localhost", 8765)
-    await server.wait_closed()    
+    async with websockets.serve(stream, "localhost", 8765):
+        await asyncio.Future()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main()) #gets checkpoints

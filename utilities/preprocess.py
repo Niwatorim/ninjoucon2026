@@ -5,7 +5,7 @@ import os
 import json
 import cv2
 import numpy as np
-from video_mediapipeline import get_pose_difference, normalize_3d_landmarks, human_analysis
+from utilities.video_mediapipeline import get_pose_difference, normalize_3d_landmarks, human_analysis
 from utilities.mediapipeline import MedaiPipeline
 from scipy.ndimage import gaussian_filter1d
 

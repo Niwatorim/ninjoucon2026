@@ -5,12 +5,11 @@ import numpy as np
 import os
 import cv2
 import socket
-from video_mediapipeline import human_analysis_segmentation, vect_to_dict, quat_to_dict
+from utilities.video_mediapipeline import human_analysis_segmentation, vect_to_dict, quat_to_dict
 import websockets
-# AI GENERATED START — DTW scoring import
 from utilities.dtw_scoring import score_transition, format_score_display
-# AI GENERATED END
-
+from utilities.handrecognizer import HandRecognizer
+import time
 
 MATCH_THRESHOLD = 10.0
 REQUIRED_HOLD_FRAMES = 15
@@ -21,16 +20,17 @@ action = None
 state = None
 
 import asyncio
-async def interactive_training_session(websocket, timestamps:dict, video_name:str= "video", student_camera=0):
+async def interactive_training_session(websocket, timestamps:dict, video_name:str= "video",checkpoint_poses:int=5, student_camera=0):
     global action
     global pose_id
     global timestamp
     global state
 
-    # AI GENERATED START — live pipeline with higher EMA alpha for fast movements
     pipeline = MedaiPipeline(enable_ble=True, ema_alpha=0.65)
     session_record = {}
-    # AI GENERATED END
+    hand_recognizer = HandRecognizer()
+    
+
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     segment_address = ("127.0.0.1", 5052)    #  RigManager.cs (drives avatar)
@@ -44,7 +44,7 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
         print("Error: teacher_keyposes.json not found")
         return
 
-    # AI GENERATED START — load teacher trajectories for DTW scoring
+
     teacher_trajectories = {}
     try:
         with open("./keyposes/teacher_trajectories.json", "r") as f:
@@ -55,7 +55,7 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
 
     last_dtw_score = None  # Store last DTW score for display
     student_transition_poses = []  # Record student poses during PLAYING state
-    # AI GENERATED END
+
 
     target_angles_db = {}
     target_normalized_db = {}
@@ -88,13 +88,18 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
 
     while True:
         ret,student_frame = cap_student.read()
+
         if not ret:
             break
         
+
         display_student = student_frame # Initialize by default
         
-        if state == "PAUSED":
+        #paused state, where we have checking the users logic
+        if state == "PAUSED" or state == "CHECKPOINT":
+            #mark frame
             annotated_student, pose, world_pose, smoothed_world = pipeline.mark_frame(student_frame)
+            action = hand_recognizer.mark_frame(student_frame, int(time.time() * 1000))
             display_student = annotated_student if pose else student_frame
 
             if world_pose is not None and smoothed_world is not None:
@@ -109,10 +114,8 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                     print(f"Segment send error: {e}")
 
                 current_pose_sequence.append(pipeline.serialize_pose(smoothed_world))
-
                 student_angles, _ = pipeline.human_analysis(smoothed_world)
                 student_normalized, student_transform = pipeline.normalize_pose(smoothed_world)
-                
                 target_angles = target_angles_db.get(current_target_pose)
                 target_normalized = target_normalized_db.get(current_target_pose)
 
@@ -120,7 +123,7 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                     current_score = 0
                     valid_joints = 0
                     
-                    # AI GENERATED START — per-limb scoring breakdown
+
                     limb_joint_map = {
                         "R.Arm": ["R_armpit", "R_elbow"],
                         "L.Arm": ["L_armpit", "L_elbow"],
@@ -130,14 +133,12 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                     }
                     limb_scores = {}
                     limb_counts = {}
-                    # AI GENERATED END
 
                     # Calculate Error
                     for joint, t_angle in target_angles.items():
                         s_angle = student_angles.get(joint)
                         if t_angle is not None and s_angle is not None:
                             diff = abs(t_angle - s_angle)
-                            
                             # Apply Deadzone
                             if diff < JOINT_DEADZONE:
                                 diff = 0.0 
@@ -146,12 +147,11 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                             current_score += (diff * weight)
                             valid_joints += 1
 
-                            # AI GENERATED START — accumulate per-limb scores
+
                             for limb_name, limb_joints in limb_joint_map.items():
                                 if joint in limb_joints:
                                     limb_scores[limb_name] = limb_scores.get(limb_name, 0) + (diff * weight)
                                     limb_counts[limb_name] = limb_counts.get(limb_name, 0) + 1
-                            # AI GENERATED END
 
                     if valid_joints > 0:
                         average_score = current_score / valid_joints
@@ -165,7 +165,6 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                         )
                         display_student = pipeline.draw_arrow(display_student, corrections)
 
-                        
                         correction_payload = pipeline.corrections_to_unity_format(corrections)
                         if any(v is not None for v in correction_payload["corrections"].values()):
                             try:
@@ -173,7 +172,7 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                             except Exception as e:
                                 print(f"Correction send error: {e}")
                         
-                        # AI GENERATED START — display per-limb scores on overlay
+
                         y_offset = 180
                         for limb_name in ["R.Arm", "L.Arm", "R.Leg", "L.Leg", "Torso"]:
                             if limb_name in limb_scores and limb_counts.get(limb_name, 0) > 0:
@@ -187,7 +186,7 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                                             (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
                                 y_offset += 25
 
-                        # Display last DTW movement score if available
+
                         if last_dtw_score is not None:
                             dtw_lines = format_score_display(last_dtw_score)
                             dtw_y = y_offset + 10
@@ -195,9 +194,8 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                                 cv2.putText(display_student, line,
                                             (20, dtw_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1, cv2.LINE_AA)
                                 dtw_y += 22
-                        # AI GENERATED END
 
-                        # Match Logic
+
                         if average_score < MATCH_THRESHOLD:
                             match_hold_frames += 1
                             cv2.putText(display_student, f"HOLD IT! ({match_hold_frames}/{REQUIRED_HOLD_FRAMES})", 
@@ -206,16 +204,19 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                             if match_hold_frames >= REQUIRED_HOLD_FRAMES:
                                 print(f"Pose {current_target_pose} matched! Resuming video...")
                                 pose_is_matched = True
-                                # AI GENERATED START — record session data
                                 session_record[current_target_pose] = {
                                     "score": average_score,
                                     "limb_scores": {k: limb_scores.get(k, 0) / max(limb_counts.get(k, 1), 1) for k in limb_joint_map},
                                     "dtw_score": last_dtw_score["overall_score"] if last_dtw_score else None,
                                 }
                                 student_transition_poses = []  # Reset for next transition
-                                # AI GENERATED END
+
                                 next_timestamp = timestamps.get(str(pose_id+1))
-                                if next_timestamp:
+
+                                if pose_is_matched and ((pose_id + 1) % checkpoint_poses) == 0:
+                                    state = "CHECKPOINT"
+
+                                elif next_timestamp:
                                     await websocket.send(json.dumps({"action": "play_until","target_time":next_timestamp}))
                                     state = "PLAYING"
                                     pose_id += 1
@@ -233,12 +234,14 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
         
         if key == ord('q'):
             print("Quitting application.")
-            break
-        elif key == ord('s') and state == "PAUSED":
+            
+        elif key == ord("s") and state == "PAUSED":
             print(f"Skipped Pose {current_target_pose}! Resuming video...")
             skip_pose = True
             next_timestamp = timestamps.get(str(pose_id+1))
-            if next_timestamp:
+            if ((pose_id + 1) % checkpoint_poses) == 0:
+                state = "CHECKPOINT"
+            elif next_timestamp:
                 await websocket.send(json.dumps({"action": "play_until","target_time":next_timestamp}))
                 state = "PLAYING"
                 pose_id += 1
@@ -247,13 +250,36 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
             else:
                 print("Last keypose achieved")
                 break
+
+        #checkpoint logic
+        if state == "CHECKPOINT":
+            cv2.putText(display_student, f"CHECKPOINT REACHED, continue? Victory Sign or not", 
+                                        (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 3, cv2.LINE_AA)
+
+        if state == "CHECKPOINT" and action == "Thumb_Up":
+            next_timestamp = timestamps.get(str(pose_id+1))
+            if next_timestamp:
+                await websocket.send(json.dumps({"action": "play_until","target_time":next_timestamp}))
+                state = "PLAYING"
+                pose_id += 1
+                current_target_pose = str(pose_id)
+                timestamp = timestamps.get(str(pose_id))
+
+        elif state == "CHECKPOINT" and action == "Thumb_Down":
+            pose_id = max(0, pose_id - checkpoint_poses + 1)
+            next_timestamp = timestamps.get(str(pose_id))
+            if next_timestamp is not None:
+                await websocket.send(json.dumps({"action": "seek","seek_time":next_timestamp}))
+                await websocket.send(json.dumps({"action": "pause"}))
+                state = "PAUSED"
+                current_target_pose = str(pose_id)
+                timestamp = next_timestamp
+
+
         if state == "PLAYING":
-            # AI GENERATED START — record student poses during transition for DTW
             annotated_student, pose, world_pose, smoothed_world = pipeline.mark_frame(student_frame)
             if smoothed_world is not None:
                 student_transition_poses.append(pipeline.serialize_pose(smoothed_world))
-            # AI GENERATED END
-
             # Listen to the websocket for TIME_UPDATE without blocking the webcam feed
             try:
                 message = await asyncio.wait_for(websocket.recv(), timeout=0.01)

@@ -184,7 +184,6 @@ class MedaiPipeline():
     self.lm = LM
     self.joint_bone = JOINT_BONE
     self.joint_weights = JOINT_WEIGHTS
-    # AI GENERATED START
     self.pose_filter = EMAFilter(alpha=ema_alpha)
     self.world_pose_filter = EMAFilter(alpha=ema_alpha)
     if enable_ble:
@@ -192,7 +191,7 @@ class MedaiPipeline():
       self.ble_transmit.start()
     else:
       self.ble_transmit = None
-    # AI GENERATED END
+
 
 
   def _initialize(self):
