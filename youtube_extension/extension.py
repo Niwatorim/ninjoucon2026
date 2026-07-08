@@ -239,7 +239,6 @@ async def stream(websocket):
     except websockets.exceptions.ConnectionClosedOK:
         print("Chrome extension disconnected")
 
-
 async def process_info():
     base_options = python.BaseOptions(model_asset_path='./gesture_recognizer.task')
     options = vision.GestureRecognizerOptions(base_options=base_options,running_mode=vision.RunningMode.VIDEO)
