@@ -1,9 +1,13 @@
 venv/
 ninjou/
 __pycache__/
+.agents/
+.codex/
+.venv/
 student_records/
 fixes/
 youtube_extension.zip
 *.task
 keyposes/*
 ./captured_vid.mp4
+./requirements.txt
