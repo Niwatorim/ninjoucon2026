@@ -109,7 +109,7 @@ def generate_keyposes_new(video_name:str, output_path:str = "keyposes/teacher_ke
     """
     from scipy.signal import find_peaks, argrelextrema
 
-    pipeline = MedaiPipeline()
+    pipeline = MedaiPipeline(enable_ble=False, ema_alpha=0.4)  # No BLE needed for preprocessing
     cap = cv2.VideoCapture(video_name)
 
     joints:dict = {}  # structure is {frame_id: {0:.., -> 33:...}}
@@ -312,12 +312,37 @@ def generate_keyposes_new(video_name:str, output_path:str = "keyposes/teacher_ke
     # --- Build output dictionaries ---
     timestamps = {}
     keyposes = {}
-    for idx, key in enumerate(keyframes):
-        # Map energy index to the actual frame (off-by-one corrected)
+    # AI GENERATED START — teacher trajectory saving for DTW scoring
+    # Map keyframe energy indices to actual frame indices in valid_frame_ids
+    keyframe_actual_indices = []
+    for key in keyframes:
         pose_frame_idx = min(key + 1, len(valid_frame_ids) - 1)
+        keyframe_actual_indices.append(pose_frame_idx)
+
+    for idx, key in enumerate(keyframes):
+        pose_frame_idx = keyframe_actual_indices[idx]
         actual_frame_id = valid_frame_ids[pose_frame_idx]
         timestamps[idx] = frame_times[actual_frame_id]
         keyposes[idx] = joints[str(actual_frame_id)]
+
+    # Save teacher trajectories between keyposes for DTW comparison.
+    # Each trajectory is the sequence of poses from keypose N to keypose N+1.
+    teacher_trajectories = {}
+    for i in range(len(keyframe_actual_indices) - 1):
+        start_idx = keyframe_actual_indices[i]
+        end_idx = keyframe_actual_indices[i + 1]
+        trajectory = []
+        for j in range(start_idx, end_idx + 1):
+            fid = valid_frame_ids[j]
+            if str(fid) in joints:
+                trajectory.append(joints[str(fid)])
+        teacher_trajectories[str(i)] = trajectory
+
+    trajectory_path = os.path.join(os.path.dirname(output_path), "teacher_trajectories.json")
+    with open(trajectory_path, "w") as f:
+        json.dump(teacher_trajectories, f)
+    print(f"Teacher trajectories saved ({len(teacher_trajectories)} segments)")
+    # AI GENERATED END — teacher trajectory saving
 
     print("Done calculating energy")
 

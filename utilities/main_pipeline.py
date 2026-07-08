@@ -7,6 +7,9 @@ import cv2
 import socket
 from video_mediapipeline import human_analysis_segmentation, vect_to_dict, quat_to_dict
 import websockets
+# AI GENERATED START — DTW scoring import
+from utilities.dtw_scoring import score_transition, format_score_display
+# AI GENERATED END
 
 
 MATCH_THRESHOLD = 10.0
@@ -24,8 +27,10 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
     global timestamp
     global state
 
-    pipeline = MedaiPipeline()
+    # AI GENERATED START — live pipeline with higher EMA alpha for fast movements
+    pipeline = MedaiPipeline(enable_ble=True, ema_alpha=0.65)
     session_record = {}
+    # AI GENERATED END
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     segment_address = ("127.0.0.1", 5052)    #  RigManager.cs (drives avatar)
@@ -38,6 +43,19 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
     except FileNotFoundError:
         print("Error: teacher_keyposes.json not found")
         return
+
+    # AI GENERATED START — load teacher trajectories for DTW scoring
+    teacher_trajectories = {}
+    try:
+        with open("./keyposes/teacher_trajectories.json", "r") as f:
+            teacher_trajectories = json.load(f)
+        print(f"Loaded {len(teacher_trajectories)} teacher trajectories for DTW scoring")
+    except FileNotFoundError:
+        print("Warning: teacher_trajectories.json not found — DTW scoring disabled")
+
+    last_dtw_score = None  # Store last DTW score for display
+    student_transition_poses = []  # Record student poses during PLAYING state
+    # AI GENERATED END
 
     target_angles_db = {}
     target_normalized_db = {}
@@ -102,6 +120,18 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                     current_score = 0
                     valid_joints = 0
                     
+                    # AI GENERATED START — per-limb scoring breakdown
+                    limb_joint_map = {
+                        "R.Arm": ["R_armpit", "R_elbow"],
+                        "L.Arm": ["L_armpit", "L_elbow"],
+                        "R.Leg": ["R_pelvis", "R_knee"],
+                        "L.Leg": ["L_pelvis", "L_knee"],
+                        "Torso": ["chest_tilt", "hip_tilt"],
+                    }
+                    limb_scores = {}
+                    limb_counts = {}
+                    # AI GENERATED END
+
                     # Calculate Error
                     for joint, t_angle in target_angles.items():
                         s_angle = student_angles.get(joint)
@@ -115,6 +145,13 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                             weight = pipeline.joint_weights.get(joint, 1.0)
                             current_score += (diff * weight)
                             valid_joints += 1
+
+                            # AI GENERATED START — accumulate per-limb scores
+                            for limb_name, limb_joints in limb_joint_map.items():
+                                if joint in limb_joints:
+                                    limb_scores[limb_name] = limb_scores.get(limb_name, 0) + (diff * weight)
+                                    limb_counts[limb_name] = limb_counts.get(limb_name, 0) + 1
+                            # AI GENERATED END
 
                     if valid_joints > 0:
                         average_score = current_score / valid_joints
@@ -136,6 +173,30 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                             except Exception as e:
                                 print(f"Correction send error: {e}")
                         
+                        # AI GENERATED START — display per-limb scores on overlay
+                        y_offset = 180
+                        for limb_name in ["R.Arm", "L.Arm", "R.Leg", "L.Leg", "Torso"]:
+                            if limb_name in limb_scores and limb_counts.get(limb_name, 0) > 0:
+                                avg_limb = limb_scores[limb_name] / limb_counts[limb_name]
+                                # Convert error to percentage (lower error = higher %)
+                                pct = max(0, min(100, 100 - (avg_limb / MATCH_THRESHOLD) * 100))
+                                color = (0, 255, 0) if pct >= 80 else (0, 255, 255) if pct >= 50 else (0, 0, 255)
+                                bar_len = int(pct / 10)
+                                bar = "\u2588" * bar_len + "\u2591" * (10 - bar_len)
+                                cv2.putText(display_student, f"{limb_name}: {bar} {pct:.0f}%",
+                                            (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+                                y_offset += 25
+
+                        # Display last DTW movement score if available
+                        if last_dtw_score is not None:
+                            dtw_lines = format_score_display(last_dtw_score)
+                            dtw_y = y_offset + 10
+                            for line in dtw_lines:
+                                cv2.putText(display_student, line,
+                                            (20, dtw_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1, cv2.LINE_AA)
+                                dtw_y += 22
+                        # AI GENERATED END
+
                         # Match Logic
                         if average_score < MATCH_THRESHOLD:
                             match_hold_frames += 1
@@ -145,6 +206,14 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                             if match_hold_frames >= REQUIRED_HOLD_FRAMES:
                                 print(f"Pose {current_target_pose} matched! Resuming video...")
                                 pose_is_matched = True
+                                # AI GENERATED START — record session data
+                                session_record[current_target_pose] = {
+                                    "score": average_score,
+                                    "limb_scores": {k: limb_scores.get(k, 0) / max(limb_counts.get(k, 1), 1) for k in limb_joint_map},
+                                    "dtw_score": last_dtw_score["overall_score"] if last_dtw_score else None,
+                                }
+                                student_transition_poses = []  # Reset for next transition
+                                # AI GENERATED END
                                 next_timestamp = timestamps.get(str(pose_id+1))
                                 if next_timestamp:
                                     await websocket.send(json.dumps({"action": "play_until","target_time":next_timestamp}))
@@ -179,6 +248,12 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                 print("Last keypose achieved")
                 break
         if state == "PLAYING":
+            # AI GENERATED START — record student poses during transition for DTW
+            annotated_student, pose, world_pose, smoothed_world = pipeline.mark_frame(student_frame)
+            if smoothed_world is not None:
+                student_transition_poses.append(pipeline.serialize_pose(smoothed_world))
+            # AI GENERATED END
+
             # Listen to the websocket for TIME_UPDATE without blocking the webcam feed
             try:
                 message = await asyncio.wait_for(websocket.recv(), timeout=0.01)
@@ -186,6 +261,18 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                 
                 if data.get("type") == "ARRIVED":
                     print("Chrome arrived perfectly at the next keypose!")
+                    # AI GENERATED START — DTW scoring on arrival
+                    transition_key = str(pose_id - 1)  # Trajectory from prev keypose to current
+                    teacher_traj = teacher_trajectories.get(transition_key, [])
+                    if teacher_traj and len(student_transition_poses) >= 2:
+                        last_dtw_score = score_transition(teacher_traj, student_transition_poses)
+                        print(f"  Movement score: {last_dtw_score['overall_score']:.0f}%")
+                        for limb, score in last_dtw_score['limb_scores'].items():
+                            print(f"    {limb}: {score:.0f}%")
+                    else:
+                        last_dtw_score = None
+                    student_transition_poses = []  # Reset for next transition
+                    # AI GENERATED END
                     state = "PAUSED"
                         
             except asyncio.TimeoutError:

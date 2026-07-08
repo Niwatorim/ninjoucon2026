@@ -177,17 +177,22 @@ class human():
 
 class MedaiPipeline():
   
-  def __init__(self) -> None:
+  def __init__(self, enable_ble=True, ema_alpha=0.5) -> None:
     self.landmarker = self._initialize()
     self.angle_threshold = ANGLE_THRESHOLD
     self.visibility_threshold = VISIBILITY_THRESHOLD
     self.lm = LM
     self.joint_bone = JOINT_BONE
     self.joint_weights = JOINT_WEIGHTS
-    self.pose_filter = EMAFilter(alpha=0.5)
-    self.world_pose_filter = EMAFilter(alpha=0.5)
-    self.ble_transmit = ESPTransmit(target_device="NauESP32", char_uuid=CHARACTERISTIC_UUID) #type:ignore
-    self.ble_transmit.start()
+    # AI GENERATED START
+    self.pose_filter = EMAFilter(alpha=ema_alpha)
+    self.world_pose_filter = EMAFilter(alpha=ema_alpha)
+    if enable_ble:
+      self.ble_transmit = ESPTransmit(target_device="NauESP32", char_uuid=CHARACTERISTIC_UUID) #type:ignore
+      self.ble_transmit.start()
+    else:
+      self.ble_transmit = None
+    # AI GENERATED END
 
 
   def _initialize(self):
