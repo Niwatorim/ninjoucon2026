@@ -492,21 +492,66 @@ class MedaiPipeline():
 
     return normalized_pose, transform_params
   
-  def euclidean_distance(self,teacher: dict, student: dict, student_params:dict, image, ax=None, threshold = 0.3):
+  def euclidean_distance(
+      self,
+      teacher: dict,
+      student: dict,
+      student_params: dict,
+      image,
+      ax=None,
+      threshold=0.3,
+      render_pose=None,
+      render_student=None,
+      render_params=None,
+      allowed_landmarks=None,
+      max_corrections=2,
+      min_arrow_px=15.0,
+      max_arrow_px=120.0,
+  ):
     """
-    calculate 2D distance in normalized
-    then transform back to raw
-
-    some code is from difference
+    Build correction vectors in body space, with optional 2D preview arrows.
     """
     corrections = []
     img_height, img_width = image.shape[:2]
     
     relevant_landmarks = set(self.lm.values())
+    if allowed_landmarks is not None:
+        relevant_landmarks &= {int(i) for i in allowed_landmarks}
 
     common = set(teacher.keys()) & set(student.keys()) & relevant_landmarks
 
     rot_inv = student_params["rot"].T
+    render_rot_inv = render_params["rot"].T if render_params is not None else None
+
+    def landmark_value(pose_data, idx):
+        if pose_data is None:
+            return None
+        if idx in pose_data:
+            return pose_data[idx]
+        return pose_data.get(str(idx)) if isinstance(pose_data, dict) else None
+
+    def is_finite_point(point):
+        return np.all(np.isfinite(point))
+
+    def in_frame(point):
+        x, y = point
+        return 0 <= x < img_width and 0 <= y < img_height
+
+    def clamp_preview_arrow(start_px, end_px):
+        vector = end_px - start_px
+        length = np.linalg.norm(vector)
+        if not np.isfinite(length) or length < min_arrow_px:
+            return None
+        if length > max_arrow_px:
+            vector = vector / length * max_arrow_px
+            end_px = start_px + vector
+        end_px = np.array([
+            np.clip(end_px[0], 0, img_width - 1),
+            np.clip(end_px[1], 0, img_height - 1),
+        ])
+        if np.linalg.norm(end_px - start_px) < min_arrow_px:
+            return None
+        return tuple(np.round(end_px).astype(int))
 
     for j in common:
         t_val = teacher[j]
@@ -523,25 +568,59 @@ class MedaiPipeline():
             unrotated_s = rot_inv @ scaled_s
             student_raw = unrotated_s + student_params["mid_hip"]
 
-            px_stu = int(student_raw[0] * img_width)
-            py_stu = int(student_raw[1] * img_height)
+            start_point = None
+            end_point = None
+            if (
+                render_pose is not None
+                and render_student is not None
+                and render_rot_inv is not None
+                and j in render_student
+            ):
+                render_landmark = landmark_value(render_pose, j)
+                if render_landmark is None:
+                    continue
 
-            px_teach = int(target_raw[0] * img_width)
-            py_teach = int(target_raw[1] * img_height)
+                render_landmark = np.array(render_landmark)
+                visibility = render_landmark[3] if len(render_landmark) > 3 else 1.0
+                if visibility < self.visibility_threshold:
+                    continue
 
-            px_dist = np.linalg.norm(np.array([px_stu, py_stu]) - np.array([px_teach, py_teach]))
-            if px_dist < 15.0: # If the arrow is less than 15 pixels long, skip it
-              continue
+                start_raw = render_landmark[:2]
+                if not is_finite_point(start_raw):
+                    continue
+
+                start_px = np.array([start_raw[0] * img_width, start_raw[1] * img_height])
+                if not in_frame(start_px):
+                    continue
+
+                scaled_preview_t = t_val * render_params["torso_length"]
+                target_preview_raw = render_rot_inv @ scaled_preview_t + render_params["mid_hip"]
+                end_px = np.array([
+                    target_preview_raw[0] * img_width,
+                    target_preview_raw[1] * img_height,
+                ])
+
+                if not is_finite_point(end_px):
+                    continue
+
+                start_point = tuple(np.round(start_px).astype(int))
+                end_point = clamp_preview_arrow(start_px, end_px)
+                if end_point is None:
+                    continue
 
             corrections.append({
                 "joint": j,
-                "start_point": (px_stu, py_stu),
-                "end_point": (px_teach, py_teach),
+                "start_point": start_point,
+                "end_point": end_point,
                 "start_point_3d": student_raw.tolist(),
                 "end_point_3d": target_raw.tolist(),
                 "error_magnitude": dist
             })
             # print(corrections) #also consist 3d coords
+
+    corrections.sort(key=lambda item: item["error_magnitude"], reverse=True)
+    if max_corrections is not None:
+        corrections = corrections[:max_corrections]
 
     return corrections
   
@@ -555,6 +634,8 @@ class MedaiPipeline():
     for correction in corrections:
       start_point = correction["start_point"]
       end_point = correction["end_point"]
+      if start_point is None or end_point is None:
+        continue
 
       cv2.arrowedLine(
         img=image,

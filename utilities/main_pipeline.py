@@ -1,4 +1,6 @@
 import json
+import base64
+import time
 from utilities.mediapipeline import MedaiPipeline, human
 from matplotlib import pyplot as plt
 import numpy as np
@@ -11,9 +13,85 @@ from utilities.dtw_scoring import score_transition, format_score_display
 from utilities.handrecognizer import HandRecognizer
 import time
 
-MATCH_THRESHOLD = 10.0
-REQUIRED_HOLD_FRAMES = 15
-JOINT_DEADZONE = 5.0
+MATCH_THRESHOLD = 16.0
+NEAR_MATCH_THRESHOLD = 24.0
+REQUIRED_HOLD_FRAMES = 8
+JOINT_DEADZONE = 7.0
+SCORE_EMA_ALPHA = 0.35
+OPENCV_FRAME_FPS = 10
+OPENCV_FRAME_INTERVAL = 1.0 / OPENCV_FRAME_FPS
+OPENCV_FRAME_MAX_WIDTH = 720
+OPENCV_FRAME_JPEG_QUALITY = 60
+
+
+def encode_opencv_frame(frame):
+    if frame is None:
+        return None
+
+    height, width = frame.shape[:2]
+    frame_to_send = frame
+    if width > OPENCV_FRAME_MAX_WIDTH:
+        scale = OPENCV_FRAME_MAX_WIDTH / width
+        frame_to_send = cv2.resize(
+            frame,
+            (OPENCV_FRAME_MAX_WIDTH, int(height * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    success, encoded = cv2.imencode(
+        ".jpg",
+        frame_to_send,
+        [int(cv2.IMWRITE_JPEG_QUALITY), OPENCV_FRAME_JPEG_QUALITY],
+    )
+    if not success:
+        return None
+
+    return base64.b64encode(encoded).decode("ascii")
+
+
+async def send_opencv_overlay_frame(websocket, frame):
+    encoded_frame = encode_opencv_frame(frame)
+    if not encoded_frame:
+        return
+
+    await websocket.send(json.dumps({
+        "type": "OPENCV_FRAME",
+        "image": encoded_frame,
+        "timestamp": time.time(),
+    }))
+
+
+def calculate_pose_match_score(target_angles, student_angles, joint_weights):
+    weighted_error = 0.0
+    total_weight = 0.0
+    joint_errors = []
+
+    for joint, target_angle in target_angles.items():
+        student_angle = student_angles.get(joint)
+        if target_angle is None or student_angle is None:
+            continue
+
+        raw_diff = abs(target_angle - student_angle)
+        adjusted_diff = 0.0 if raw_diff < JOINT_DEADZONE else raw_diff
+        weight = joint_weights.get(joint, 1.0)
+
+        weighted_error += adjusted_diff * weight
+        total_weight += weight
+        joint_errors.append((joint, raw_diff))
+
+    if total_weight == 0.0:
+        return None, []
+
+    joint_errors.sort(key=lambda item: item[1], reverse=True)
+    return weighted_error / total_weight, joint_errors[:2]
+
+
+def update_hold_progress(smoothed_score, match_hold_frames):
+    if smoothed_score < MATCH_THRESHOLD:
+        return match_hold_frames + 1, True
+    if smoothed_score < NEAR_MATCH_THRESHOLD:
+        return max(match_hold_frames - 1, 0), False
+    return max(match_hold_frames - 3, 0), False
 
 pose_id = 0
 action = None
@@ -84,7 +162,9 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
         return
         
     match_hold_frames = 0
+    score_ema = None
     skip_pose = False
+    last_overlay_frame_sent = 0.0
 
     while True:
         ret,student_frame = cap_student.read()
@@ -116,52 +196,43 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                 current_pose_sequence.append(pipeline.serialize_pose(smoothed_world))
                 student_angles, _ = pipeline.human_analysis(smoothed_world)
                 student_normalized, student_transform = pipeline.normalize_pose(smoothed_world)
+                student_screen_normalized, student_screen_transform = pipeline.normalize_pose(pose)
+                
                 target_angles = target_angles_db.get(current_target_pose)
                 target_normalized = target_normalized_db.get(current_target_pose)
 
                 if target_angles:
-                    current_score = 0
-                    valid_joints = 0
-                    
+                    average_score, worst_joints = calculate_pose_match_score(
+                        target_angles,
+                        student_angles,
+                        pipeline.joint_weights,
+                    )
 
-                    limb_joint_map = {
-                        "R.Arm": ["R_armpit", "R_elbow"],
-                        "L.Arm": ["L_armpit", "L_elbow"],
-                        "R.Leg": ["R_pelvis", "R_knee"],
-                        "L.Leg": ["L_pelvis", "L_knee"],
-                        "Torso": ["chest_tilt", "hip_tilt"],
-                    }
-                    limb_scores = {}
-                    limb_counts = {}
-
-                    # Calculate Error
-                    for joint, t_angle in target_angles.items():
-                        s_angle = student_angles.get(joint)
-                        if t_angle is not None and s_angle is not None:
-                            diff = abs(t_angle - s_angle)
-                            # Apply Deadzone
-                            if diff < JOINT_DEADZONE:
-                                diff = 0.0 
-                                
-                            weight = pipeline.joint_weights.get(joint, 1.0)
-                            current_score += (diff * weight)
-                            valid_joints += 1
-
-
-                            for limb_name, limb_joints in limb_joint_map.items():
-                                if joint in limb_joints:
-                                    limb_scores[limb_name] = limb_scores.get(limb_name, 0) + (diff * weight)
-                                    limb_counts[limb_name] = limb_counts.get(limb_name, 0) + 1
-
-                    if valid_joints > 0:
-                        average_score = current_score / valid_joints
+                    if average_score is not None:
+                        if score_ema is None:
+                            score_ema = average_score
+                        else:
+                            score_ema = (
+                                SCORE_EMA_ALPHA * average_score
+                                + (1.0 - SCORE_EMA_ALPHA) * score_ema
+                            )
                         
                         # Draw Euclidean Arrows
+                        correction_landmarks = [
+                            pipeline.joint_bone[joint]["point"]
+                            for joint, _ in worst_joints
+                            if joint in pipeline.joint_bone
+                        ]
                         corrections = pipeline.euclidean_distance(
                             teacher=target_normalized, #type: ignore
                             student=student_normalized, 
                             student_params=student_transform, 
-                            image=display_student
+                            image=display_student,
+                            render_pose=pose,
+                            render_student=student_screen_normalized,
+                            render_params=student_screen_transform,
+                            allowed_landmarks=correction_landmarks,
+                            max_corrections=2,
                         )
                         display_student = pipeline.draw_arrow(display_student, corrections)
 
@@ -172,33 +243,10 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                             except Exception as e:
                                 print(f"Correction send error: {e}")
                         
-
-                        y_offset = 180
-                        for limb_name in ["R.Arm", "L.Arm", "R.Leg", "L.Leg", "Torso"]:
-                            if limb_name in limb_scores and limb_counts.get(limb_name, 0) > 0:
-                                avg_limb = limb_scores[limb_name] / limb_counts[limb_name]
-                                # Convert error to percentage (lower error = higher %)
-                                pct = max(0, min(100, 100 - (avg_limb / MATCH_THRESHOLD) * 100))
-                                color = (0, 255, 0) if pct >= 80 else (0, 255, 255) if pct >= 50 else (0, 0, 255)
-                                bar_len = int(pct / 10)
-                                bar = "\u2588" * bar_len + "\u2591" * (10 - bar_len)
-                                cv2.putText(display_student, f"{limb_name}: {bar} {pct:.0f}%",
-                                            (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
-                                y_offset += 25
-
-
-                        if last_dtw_score is not None:
-                            dtw_lines = format_score_display(last_dtw_score)
-                            dtw_y = y_offset + 10
-                            for line in dtw_lines:
-                                cv2.putText(display_student, line,
-                                            (20, dtw_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1, cv2.LINE_AA)
-                                dtw_y += 22
-
-
-                        if average_score < MATCH_THRESHOLD:
-                            match_hold_frames += 1
-                            cv2.putText(display_student, f"HOLD IT! ({match_hold_frames}/{REQUIRED_HOLD_FRAMES})", 
+                        # Match Logic
+                        match_hold_frames, is_match = update_hold_progress(score_ema, match_hold_frames)
+                        if is_match:
+                            cv2.putText(display_student, f"HOLD IT! ({match_hold_frames}/{REQUIRED_HOLD_FRAMES}) Error: {score_ema:.1f}",
                                         (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 3, cv2.LINE_AA)
                             
                             if match_hold_frames >= REQUIRED_HOLD_FRAMES:
@@ -222,13 +270,21 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                                     pose_id += 1
                                     current_target_pose = str(pose_id)
                                     timestamp = timestamps.get(str(pose_id))
+                                    match_hold_frames = 0
+                                    score_ema = None
                                 else: break
                         else:
-                            match_hold_frames = 0 
-                            cv2.putText(display_student, f"Match this pose! (Error: {average_score:.1f})", 
+                            cv2.putText(display_student, f"Match this pose! (Error: {score_ema:.1f})",
                                         (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+                            if match_hold_frames > 0:
+                                cv2.putText(display_student, f"Almost there ({match_hold_frames}/{REQUIRED_HOLD_FRAMES})",
+                                            (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
+                            if worst_joints:
+                                joint_text = ", ".join(joint for joint, _ in worst_joints)
+                                cv2.putText(display_student, f"Adjust: {joint_text}",
+                                            (20, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
                             cv2.putText(display_student, "Press 's' to SKIP", 
-                                        (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                                        (20, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
         key = cv2.waitKey(1) & 0xFF
         
@@ -247,6 +303,8 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                 pose_id += 1
                 current_target_pose = str(pose_id)
                 timestamp = timestamps.get(str(pose_id))
+                match_hold_frames = 0
+                score_ema = None
             else:
                 print("Last keypose achieved")
                 break
@@ -307,6 +365,18 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                 print("Extension disconnected.")
                 break
 
+
+        now = time.monotonic()
+        if now - last_overlay_frame_sent >= OPENCV_FRAME_INTERVAL:
+            try:
+                await send_opencv_overlay_frame(websocket, display_student)
+                last_overlay_frame_sent = now
+            except websockets.exceptions.ConnectionClosed:
+                print("Extension disconnected.")
+                break
+            except Exception as e:
+                print(f"OpenCV overlay frame send error: {e}")
+                last_overlay_frame_sent = now
 
         cv2.namedWindow('Pose Estimation', cv2.WINDOW_NORMAL)
         cv2.imshow('Pose Estimation', display_student)

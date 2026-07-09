@@ -7,11 +7,8 @@ Seek to that value
 console.log("Content.js loaded");
 
 const WEBCAM_OVERLAY_ID = "motionlearn-webcam-overlay";
-let webcamStream = null;
-let webcamRequest = null;
-let webcamErrorMessage = "";
 let overlayCheckTimer = null;
-let overlayCheckNeedsPreviewStart = false;
+let overlayExpanded = false;
 
 function getYouTubePlayer() {
     return document.querySelector("#movie_player") || document.querySelector(".html5-video-player");
@@ -30,41 +27,182 @@ function isYouTubeFullscreen(player) {
 
 function applyOverlayLayout(overlay, player) {
     const fullscreen = isYouTubeFullscreen(player);
+    const expanded = overlayExpanded;
+    const header = overlay.querySelector("[data-motionlearn-header='true']");
     const label = overlay.querySelector("[data-motionlearn-label='true']");
+    const button = overlay.querySelector("[data-motionlearn-expand-button='true']");
+    const preview = overlay.querySelector("[data-motionlearn-preview='true']");
     const status = overlay.querySelector("[data-motionlearn-status='true']");
 
-    setStyles(overlay, fullscreen ? {
+    setStyles(overlay, expanded ? {
+        top: "0",
+        right: "0",
+        bottom: "0",
+        left: "0",
+        width: "100%",
+        height: "100%",
+        display: "block",
+        flexDirection: "initial",
+        background: "transparent",
+        border: "none",
+        borderRadius: "0",
+        boxShadow: "none"
+    } : fullscreen ? {
         top: "24px",
         right: "24px",
+        bottom: "auto",
+        left: "auto",
         width: "clamp(420px, 28vw, 520px)",
+        height: "auto",
+        display: "block",
+        flexDirection: "initial",
+        background: "rgba(8, 12, 24, 0.88)",
         border: "3px solid rgba(255, 255, 255, 0.85)",
         borderRadius: "5px",
         boxShadow: "0 12px 32px rgba(0, 0, 0, 0.45)"
     } : {
         top: "16px",
         right: "16px",
+        bottom: "auto",
+        left: "auto",
         width: "220px",
+        height: "auto",
+        display: "block",
+        flexDirection: "initial",
+        background: "rgba(8, 12, 24, 0.88)",
         border: "2px solid rgba(255, 255, 255, 0.8)",
         borderRadius: "4px",
         boxShadow: "0 8px 24px rgba(0, 0, 0, 0.35)"
     });
 
-    if (label) {
-        setStyles(label, fullscreen ? {
+    if (header) {
+        setStyles(header, expanded ? {
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "12px",
+            position: "absolute",
+            top: "0",
+            right: "0",
+            left: "0",
+            zIndex: "1",
+            padding: "10px 12px",
+            background: "rgba(0, 0, 0, 0.58)",
+            pointerEvents: "none"
+        } : fullscreen ? {
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "10px",
+            position: "static",
+            top: "auto",
+            right: "auto",
+            left: "auto",
+            zIndex: "auto",
             padding: "8px 12px",
+            background: "rgba(0, 0, 0, 0.45)",
+            pointerEvents: "none"
+        } : {
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "8px",
+            position: "static",
+            top: "auto",
+            right: "auto",
+            left: "auto",
+            zIndex: "auto",
+            padding: "5px 8px",
+            background: "rgba(0, 0, 0, 0.45)",
+            pointerEvents: "none"
+        });
+    }
+
+    if (label) {
+        setStyles(label, (fullscreen || expanded) ? {
+            padding: "0",
             fontSize: "18px"
         } : {
-            padding: "5px 8px",
+            padding: "0",
             fontSize: "12px"
         });
     }
 
+    if (button) {
+        button.textContent = expanded ? "Collapse" : "Expand";
+        button.setAttribute("aria-pressed", String(expanded));
+        button.setAttribute("aria-label", expanded ? "Collapse webcam overlay" : "Expand webcam overlay");
+        setStyles(button, (fullscreen || expanded) ? {
+            padding: "5px 10px",
+            fontSize: "13px"
+        } : {
+            padding: "3px 7px",
+            fontSize: "11px"
+        });
+    }
+
+    if (preview) {
+        setStyles(preview, expanded ? {
+            position: "absolute",
+            top: "0",
+            right: "0",
+            bottom: "0",
+            left: "0",
+            width: "100%",
+            height: "100%",
+            minHeight: "0",
+            flex: "0 0 auto",
+            aspectRatio: "auto",
+            background: "transparent",
+            objectFit: "contain",
+            transform: "none",
+            opacity: "0.55"
+        } : {
+            position: "static",
+            top: "auto",
+            right: "auto",
+            bottom: "auto",
+            left: "auto",
+            width: "100%",
+            height: "auto",
+            minHeight: "0",
+            flex: "0 0 auto",
+            aspectRatio: "16 / 9",
+            background: "#111827",
+            objectFit: "cover",
+            transform: "none",
+            opacity: "1"
+        });
+    }
+
     if (status) {
-        setStyles(status, fullscreen ? {
+        setStyles(status, expanded ? {
+            position: "absolute",
+            top: "50%",
+            left: "50%",
+            transform: "translate(-50%, -50%)",
+            zIndex: "2",
+            width: "min(520px, 80%)",
+            padding: "16px",
+            minHeight: "96px",
+            fontSize: "16px"
+        } : fullscreen ? {
+            position: "static",
+            top: "auto",
+            left: "auto",
+            transform: "none",
+            zIndex: "auto",
+            width: "auto",
             padding: "16px",
             minHeight: "96px",
             fontSize: "16px"
         } : {
+            position: "static",
+            top: "auto",
+            left: "auto",
+            transform: "none",
+            zIndex: "auto",
+            width: "auto",
             padding: "10px",
             minHeight: "52px",
             fontSize: "12px"
@@ -88,47 +226,76 @@ function createWebcamOverlay() {
         pointerEvents: "none"
     });
 
+    const header = document.createElement("div");
+    header.dataset.motionlearnHeader = "true";
+
     const label = document.createElement("div");
     label.textContent = "Webcam Overlay";
     label.dataset.motionlearnLabel = "true";
     setStyles(label, {
         fontWeight: "700",
-        textShadow: "0 1px 2px rgba(0, 0, 0, 0.8)",
-        background: "rgba(0, 0, 0, 0.45)"
+        textShadow: "0 1px 2px rgba(0, 0, 0, 0.8)"
     });
 
-    const preview = document.createElement("video");
-    preview.autoplay = true;
-    preview.muted = true;
-    preview.playsInline = true;
+    const expandButton = document.createElement("button");
+    expandButton.type = "button";
+    expandButton.dataset.motionlearnExpandButton = "true";
+    expandButton.setAttribute("aria-label", "Expand webcam overlay");
+    setStyles(expandButton, {
+        appearance: "none",
+        border: "1px solid rgba(255, 255, 255, 0.72)",
+        borderRadius: "4px",
+        background: "rgba(255, 255, 255, 0.14)",
+        color: "#ffffff",
+        cursor: "pointer",
+        fontFamily: "Arial, sans-serif",
+        fontWeight: "700",
+        lineHeight: "1.2",
+        pointerEvents: "auto"
+    });
+    expandButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        overlayExpanded = !overlayExpanded;
+        expandButton.setAttribute("aria-label", overlayExpanded ? "Collapse webcam overlay" : "Expand webcam overlay");
+        applyOverlayLayout(overlay, getYouTubePlayer());
+    });
+
+    header.appendChild(label);
+    header.appendChild(expandButton);
+
+    const preview = document.createElement("img");
+    preview.alt = "OpenCV pose view";
+    preview.dataset.motionlearnPreview = "true";
     setStyles(preview, {
-        display: "block",
+        display: "none",
         width: "100%",
         aspectRatio: "16 / 9",
         background: "#111827",
         objectFit: "cover",
-        transform: "scaleX(-1)"
+        transform: "none"
     });
 
     const status = document.createElement("div");
     status.dataset.motionlearnStatus = "true";
+    status.textContent = "Waiting for OpenCV pose view...";
     setStyles(status, {
-        display: "none",
+        display: "block",
         padding: "10px",
         minHeight: "52px",
         background: "#111827",
         color: "#f9fafb"
     });
 
-    overlay.appendChild(label);
+    overlay.appendChild(header);
     overlay.appendChild(preview);
     overlay.appendChild(status);
 
     return overlay;
 }
 
-function showWebcamError(overlay, message) {
-    const preview = overlay.querySelector("video");
+function showOpenCvStatus(overlay, message) {
+    const preview = overlay.querySelector("[data-motionlearn-preview='true']");
     const status = overlay.querySelector("[data-motionlearn-status='true']");
 
     if (preview) {
@@ -140,83 +307,28 @@ function showWebcamError(overlay, message) {
     }
 }
 
-function showWebcamStatus(overlay, message) {
-    const status = overlay.querySelector("[data-motionlearn-status='true']");
+function showOpenCvFrame(image) {
+    if (!image) return;
 
-    if (status) {
-        status.textContent = message;
-        status.style.display = "block";
-    }
-}
+    ensureWebcamOverlay();
 
-async function startWebcamPreview(overlay) {
-    const preview = overlay.querySelector("video");
+    const overlay = document.getElementById(WEBCAM_OVERLAY_ID);
+    if (!overlay) return;
+
+    const preview = overlay.querySelector("[data-motionlearn-preview='true']");
     const status = overlay.querySelector("[data-motionlearn-status='true']");
 
     if (!preview) return;
 
-    if (webcamErrorMessage) {
-        showWebcamError(overlay, webcamErrorMessage);
-        return;
-    }
-
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        webcamErrorMessage = "Camera preview is not available in this browser.";
-        showWebcamError(overlay, webcamErrorMessage);
-        return;
-    }
-
-    if (!webcamStream) {
-        try {
-            webcamRequest = webcamRequest || navigator.mediaDevices.getUserMedia({
-                video: true,
-                audio: false
-            });
-            webcamStream = await webcamRequest;
-            webcamErrorMessage = "";
-        } catch (error) {
-            console.warn(
-                "MotionLearn webcam access failed:",
-                error && error.name,
-                error && error.message,
-                error
-            );
-            webcamRequest = null;
-            webcamErrorMessage = "Camera unavailable. Allow camera access or close another app using it, then reload YouTube.";
-            showWebcamError(overlay, webcamErrorMessage);
-            return;
-        }
-    }
-
-    if (preview.srcObject !== webcamStream) {
-        preview.srcObject = webcamStream;
-    }
-
+    preview.src = `data:image/jpeg;base64,${image}`;
     preview.style.display = "block";
-
-    if (preview.paused || preview.readyState < 2) {
-        try {
-            await preview.play();
-        } catch (error) {
-            console.warn(
-                "MotionLearn webcam preview playback failed:",
-                error && error.name,
-                error && error.message,
-                error
-            );
-            showWebcamStatus(overlay, "Camera connected, but preview playback was interrupted. Reload YouTube if the preview stays blank.");
-            return;
-        }
-    }
-
     if (status) {
         status.style.display = "none";
         status.textContent = "";
     }
 }
 
-function ensureWebcamOverlay(options = {}) {
-    const shouldStartPreview = Boolean(options.startPreview);
+function ensureWebcamOverlay() {
     const player = getYouTubePlayer();
     if (!player) return;
 
@@ -237,21 +349,17 @@ function ensureWebcamOverlay(options = {}) {
     }
 
     applyOverlayLayout(overlay, player);
-    if (createdOverlay || shouldStartPreview) {
-        startWebcamPreview(overlay);
+    if (createdOverlay) {
+        showOpenCvStatus(overlay, "Waiting for OpenCV pose view...");
     }
 }
 
-function scheduleOverlayCheck(options = {}) {
-    overlayCheckNeedsPreviewStart = overlayCheckNeedsPreviewStart || Boolean(options.startPreview);
-
+function scheduleOverlayCheck() {
     if (overlayCheckTimer) return;
 
     overlayCheckTimer = window.setTimeout(() => {
-        const shouldStartPreview = overlayCheckNeedsPreviewStart;
         overlayCheckTimer = null;
-        overlayCheckNeedsPreviewStart = false;
-        ensureWebcamOverlay({ startPreview: shouldStartPreview });
+        ensureWebcamOverlay();
     }, 250);
 }
 
@@ -269,14 +377,27 @@ function attachTimeUpdateListener(video) {
 
 if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => {
-        ensureWebcamOverlay({ startPreview: true });
+        ensureWebcamOverlay();
     }, { once: true });
 } else {
-    ensureWebcamOverlay({ startPreview: true });
+    ensureWebcamOverlay();
 }
 
 document.addEventListener("yt-navigate-finish", scheduleOverlayCheck);
 document.addEventListener("fullscreenchange", scheduleOverlayCheck);
+document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !overlayExpanded) return;
+
+    const overlay = document.getElementById(WEBCAM_OVERLAY_ID);
+    overlayExpanded = false;
+    if (overlay) {
+        const button = overlay.querySelector("[data-motionlearn-expand-button='true']");
+        if (button) {
+            button.setAttribute("aria-label", "Expand webcam overlay");
+        }
+        applyOverlayLayout(overlay, getYouTubePlayer());
+    }
+});
 
 const playerObserver = new MutationObserver((mutations) => {
     const player = getYouTubePlayer();
@@ -291,7 +412,7 @@ const playerObserver = new MutationObserver((mutations) => {
     ));
 
     if (overlayMissing) {
-        scheduleOverlayCheck({ startPreview: true });
+        scheduleOverlayCheck();
     } else if (playerClassChanged) {
         scheduleOverlayCheck();
     }
@@ -305,6 +426,11 @@ playerObserver.observe(document.documentElement, {
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.type === "OPENCV_FRAME") {
+        showOpenCvFrame(request.image);
+        return;
+    }
+
     console.log("Content Script command: ", request.action);
     console.log("Time to turn: ", request.seek_time);
 

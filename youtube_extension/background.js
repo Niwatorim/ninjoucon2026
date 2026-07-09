@@ -4,7 +4,9 @@ function connectWebSocket(){
     socket.onopen=()=> console.log("Opened websocket");
     socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
-        console.log("Background recieved: ",data.action);
+        if (data.type !== "OPENCV_FRAME") {
+            console.log("Background recieved: ",data.action);
+        }
 
         chrome.tabs.query(
             {url:"https://www.youtube.com/*"},
