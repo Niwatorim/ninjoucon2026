@@ -2,13 +2,14 @@ import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import cv2
-import time
-import mediapipe as mp
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
-import time
-import asyncio
-import time
+from pathlib import Path
+
+
+GESTURE_MODEL_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "youtube_extension"
+    / "gesture_recognizer.task"
+)
 
 
 class HandRecognizer():
@@ -16,7 +17,10 @@ class HandRecognizer():
         self.landmarker = self._initialize()
 
     def _initialize(self):
-        base_options = python.BaseOptions(model_asset_path='./gesture_recognizer.task')
+        if not GESTURE_MODEL_PATH.exists():
+            raise FileNotFoundError(f"Gesture recognizer model not found: {GESTURE_MODEL_PATH}")
+
+        base_options = python.BaseOptions(model_asset_path=str(GESTURE_MODEL_PATH))
         options = vision.GestureRecognizerOptions(base_options=base_options,running_mode=vision.RunningMode.VIDEO)
         recognizer = vision.GestureRecognizer.create_from_options(options)
         return recognizer

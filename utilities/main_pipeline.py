@@ -46,7 +46,7 @@ def encode_opencv_frame(frame):
     if not success:
         return None
 
-    return base64.b64encode(encoded).decode("ascii")
+    return base64.b64encode(encoded.tobytes()).decode("ascii")
 
 
 async def send_opencv_overlay_frame(websocket, frame):
@@ -165,6 +165,7 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
     score_ema = None
     skip_pose = False
     last_overlay_frame_sent = 0.0
+    checkpoint_waiting_paused = False
 
     while True:
         ret,student_frame = cap_student.read()
@@ -197,7 +198,7 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                 student_angles, _ = pipeline.human_analysis(smoothed_world)
                 student_normalized, student_transform = pipeline.normalize_pose(smoothed_world)
                 student_screen_normalized, student_screen_transform = pipeline.normalize_pose(pose)
-                
+
                 target_angles = target_angles_db.get(current_target_pose)
                 target_normalized = target_normalized_db.get(current_target_pose)
 
@@ -254,8 +255,9 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
                                 pose_is_matched = True
                                 session_record[current_target_pose] = {
                                     "score": average_score,
-                                    "limb_scores": {k: limb_scores.get(k, 0) / max(limb_counts.get(k, 1), 1) for k in limb_joint_map},
+                                    "worst_joints": [joint for joint, _ in worst_joints],
                                     "dtw_score": last_dtw_score["overall_score"] if last_dtw_score else None,
+                                    "dtw_limb_scores": last_dtw_score["limb_scores"] if last_dtw_score else {},
                                 }
                                 student_transition_poses = []  # Reset for next transition
 
@@ -263,6 +265,10 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
 
                                 if pose_is_matched and ((pose_id + 1) % checkpoint_poses) == 0:
                                     state = "CHECKPOINT"
+                                    checkpoint_waiting_paused = False
+                                    match_hold_frames = 0
+                                    score_ema = None
+                                    action = None
 
                                 elif next_timestamp:
                                     await websocket.send(json.dumps({"action": "play_until","target_time":next_timestamp}))
@@ -297,6 +303,10 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
             next_timestamp = timestamps.get(str(pose_id+1))
             if ((pose_id + 1) % checkpoint_poses) == 0:
                 state = "CHECKPOINT"
+                checkpoint_waiting_paused = False
+                match_hold_frames = 0
+                score_ema = None
+                action = None
             elif next_timestamp:
                 await websocket.send(json.dumps({"action": "play_until","target_time":next_timestamp}))
                 state = "PLAYING"
@@ -311,6 +321,9 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
 
         #checkpoint logic
         if state == "CHECKPOINT":
+            if not checkpoint_waiting_paused:
+                await websocket.send(json.dumps({"action": "pause"}))
+                checkpoint_waiting_paused = True
             cv2.putText(display_student, f"CHECKPOINT REACHED, continue? Victory Sign or not", 
                                         (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 3, cv2.LINE_AA)
 
@@ -319,9 +332,13 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
             if next_timestamp:
                 await websocket.send(json.dumps({"action": "play_until","target_time":next_timestamp}))
                 state = "PLAYING"
+                checkpoint_waiting_paused = False
                 pose_id += 1
                 current_target_pose = str(pose_id)
                 timestamp = timestamps.get(str(pose_id))
+                match_hold_frames = 0
+                score_ema = None
+                action = None
 
         elif state == "CHECKPOINT" and action == "Thumb_Down":
             pose_id = max(0, pose_id - checkpoint_poses + 1)
@@ -329,9 +346,26 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
             if next_timestamp is not None:
                 await websocket.send(json.dumps({"action": "seek","seek_time":next_timestamp}))
                 await websocket.send(json.dumps({"action": "pause"}))
-                state = "PAUSED"
                 current_target_pose = str(pose_id)
                 timestamp = next_timestamp
+                match_hold_frames = 0
+                score_ema = None
+                student_transition_poses = []
+                action = None
+
+                await asyncio.sleep(2)
+
+                replay_target = timestamps.get(str(pose_id + 1))
+                if replay_target is not None:
+                    await websocket.send(json.dumps({"action": "play_until","target_time":replay_target}))
+                    state = "PLAYING"
+                    checkpoint_waiting_paused = False
+                    pose_id += 1
+                    current_target_pose = str(pose_id)
+                    timestamp = timestamps.get(str(pose_id))
+                else:
+                    state = "PAUSED"
+                    checkpoint_waiting_paused = False
 
 
         if state == "PLAYING":

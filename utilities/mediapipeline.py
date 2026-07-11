@@ -73,6 +73,9 @@ class ESPTransmit:
     self.target_device = target_device
     self.char_uuid = char_uuid
     self.device = None
+    self.data_queue = queue.Queue(maxsize=1)
+    self._running = False
+    self._thread = None
   
   def start(self):
         """Starts the background BLE thread."""
@@ -83,7 +86,7 @@ class ESPTransmit:
   def stop(self):
       """Cleanly shuts down the thread."""
       self._running = False
-      if self._thread:
+      if self._thread is not None:
           self._thread.join()
 
   def send_data(self, payload: str):
@@ -120,7 +123,7 @@ class ESPTransmit:
 
   async def _ble_task(self):
       found = await self._find_device()
-      if not found:
+      if not found or self.device is None:
           return
 
       logger.info(f"Connecting to {self.device.name}")
@@ -573,6 +576,7 @@ class MedaiPipeline():
             if (
                 render_pose is not None
                 and render_student is not None
+                and render_params is not None
                 and render_rot_inv is not None
                 and j in render_student
             ):
@@ -776,7 +780,8 @@ class MedaiPipeline():
     payload = f"{pan_angle},{tilt_angle}"
 
     # Safely hand it off to the background thread
-    self.ble_transmitter.send_data(payload)
+    if self.ble_transmit is not None:
+        self.ble_transmit.send_data(payload)
 
   # ============ CLAUDE GENERATED START ============
   def corrections_to_unity_format(self, corrections):
@@ -798,7 +803,7 @@ class MedaiPipeline():
     }
 
     # Initialize all fields to None (Unity expects all keys present)
-    final = {
+    final: dict[str, dict[str, float] | None] = {
         "r_elbow": None,   "r_forearm": None,
         "l_elbow": None,   "l_forearm": None,
         "r_shoulder": None, "l_shoulder": None,
@@ -825,7 +830,8 @@ class MedaiPipeline():
         rotation = R.align_vectors([arrow_vector], [start_vector])  # 2D arrays required
         q = rotation[0].as_quat()
 
-        final[reverse_LM[joint_idx]] = {
+        joint_name = reverse_LM[joint_idx]
+        final[joint_name] = {
             "x": float(q[0]), "y": float(q[1]),
             "z": float(q[2]), "w": float(q[3])
         }
