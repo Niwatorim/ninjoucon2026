@@ -592,7 +592,7 @@ async function submitCheckpointSelection(message, video, buttonContainer, onSent
     setCheckpointSelectionPending(buttonContainer, true);
 
     try {
-        await sendCheckpointMessage(message);
+        await sendCheckpointMessage(JSON.stringify(message));
         resolveCheckpointSelection(video);
         registerMotionLearnContentScript();
         if (onSent) onSent();
@@ -698,10 +698,26 @@ function createSegmentSlider(player, playerControls, video) {
     });
     applySegmentButtonLayout(buttonContainer, player);
 
+    const pipelineButton = createSegmentButton("Add Pipeline");
+    pipelineButton.addEventListener("click", () => {
+        const originalText = pipelineButton.textContent;
+        pipelineButton.textContent = "Added!";
+        pipelineButton.style.backgroundColor = 'rgba(76, 175, 80, 0.5)';
+        pipelineButton.style.borderColor = 'rgba(76, 175, 80, 0.8)';
+        
+        sendCheckpointMessage(JSON.stringify({ type: "URL", url: window.location.href })).catch((e) => console.error(e));
+        
+        setTimeout(() => {
+            pipelineButton.textContent = originalText;
+            pipelineButton.style.backgroundColor = 'rgba(8, 12, 24, 0.88)';
+            pipelineButton.style.borderColor = 'rgba(255, 255, 255, 0.45)';
+        }, 2000);
+    });
+
     const saveButton = createSegmentButton("Save Checkpoint");
     saveButton.addEventListener("click", () => {
         const value = parseFloat(slider.value).toFixed(2);
-        submitCheckpointSelection(value, video, buttonContainer, () => {
+        submitCheckpointSelection({ type: "CHECKPOINT", time: parseFloat(value) }, video, buttonContainer, () => {
             navigator.clipboard.writeText(value).then(() => {
                 console.log(`Copied checkpoint time: ${value}s`);
             }).catch((error) => {
@@ -713,9 +729,10 @@ function createSegmentSlider(player, playerControls, video) {
     const closeButton = createSegmentButton("X");
     closeButton.setAttribute("aria-label", "Cancel checkpoint selection");
     closeButton.addEventListener("click", () => {
-        submitCheckpointSelection("no", video, buttonContainer);
+        submitCheckpointSelection({ type: "CANCEL" }, video, buttonContainer);
     });
 
+    buttonContainer.appendChild(pipelineButton);
     buttonContainer.appendChild(saveButton);
     buttonContainer.appendChild(closeButton);
 

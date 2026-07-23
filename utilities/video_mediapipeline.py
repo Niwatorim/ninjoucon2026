@@ -382,7 +382,7 @@ def quat_to_dict(q):
         "w": float(q[3])
     }
 
-def human_analysis_segmentation(pose):
+def human_analysis_segmentation(pose, normalize=True):
     """
     human analysis but with normalizing all vectors and vectors arent angles between the things but just from e.g. shoulder to elbow
     """
@@ -542,13 +542,9 @@ def human_analysis_segmentation(pose):
         # return ( R.from_quat(yaw_angle)).as_quat().tolist()
         # return ( R.from_quat(pitch_angle)).as_quat().tolist()
         # return (R.from_quat(roll_angle)).as_quat().tolist()
-
-
-    
+ 
     pose_dict, visibility =create_dict(pose)
-    # n=normalize_orientation(pose_dict) #need to stop using this to allow for rotations
-
-    n=pose_dict
+    n=normalize_orientation(pose_dict) if normalize else pose_dict
 
     mid_hip = (n[23] + n[24]) / 2
     mid_shoulder = (n[11] + n[12]) / 2

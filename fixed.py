@@ -19,13 +19,18 @@ import os
 import hashlib
 import shutil
 
-#input youtube URL + download
-from utilities.youtube_downloader import downloader
+from utilities.youtube_downloader import downloader, start_extension_server, get_url_from_extension, get_checkpoint_boundary
+from utilities.main_pipeline import interactive_training_session
+from utilities.preprocess import generate_keyposes_new
 
-url = input("what is your youtube video? (type n to use already existing video): ")
+async def main():
+    # Start the extension background server to listen for URL and Checkpoint
+    asyncio.create_task(start_extension_server())
 
-# Keypose caching: hash URL and check for cached results
-if url != "n":
+    print("Waiting for URL from Chrome Extension...")
+    url = await get_url_from_extension()
+    
+    # Keypose caching
     url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
     cache_keyposes = f"keyposes/{url_hash}_keyposes.json"
     cache_timestamps = f"keyposes/{url_hash}_timestamps.json"
@@ -35,25 +40,21 @@ if url != "n":
         shutil.copy(cache_keyposes, "./keyposes/teacher_keyposes.json")
         shutil.copy(cache_timestamps, "./keyposes/teacher_timestamps.json")
     else:
-
-
         print("downloading youtube video")
-        video_filename = "./Teacher_video.webm" # Fallback
+        video_filename = "./Teacher_video.webm" # Fallback if we download it (but I havent ggs)
         try:
-            video_filename = downloader(url)
+            # keep WebSocket responsive
+            video_filename = await asyncio.to_thread(downloader, url)
             print(f"Downloaded as: {video_filename}")
         except Exception as e:
             print(f"failed to download: {e}")
 
-        #split process into keyposes
-        from utilities.preprocess import generate_keyposes_new
         print("Generating keyframes")
         try:
-            generate_keyposes_new(video_filename)
+            await asyncio.to_thread(generate_keyposes_new, video_filename)
         except Exception as e:
             print(f"failed to generate keyframes: {e}")
 
-        # Copy generated files to cache for future reuse
         if os.path.exists("./keyposes/teacher_keyposes.json"):
             shutil.copy("./keyposes/teacher_keyposes.json", cache_keyposes)
         if os.path.exists("./keyposes/teacher_timestamps.json"):
@@ -62,33 +63,25 @@ if url != "n":
         if os.path.exists(video_filename):
             os.remove(video_filename)
 
-#------------ main loop -------------
+    #load time stamps:
+    try:
+        with open("./keyposes/teacher_timestamps.json","r") as f:
+            timestamps = json.load(f)
+    except FileNotFoundError:
+        print("teacher_timestamps.json not found, make sure generate_keyposes worked.")
+        timestamps = {}
 
-#load time stamps:
-try:
-    with open("./keyposes/teacher_timestamps.json","r") as f:
-        timestamps = json.load(f)
-except FileNotFoundError:
-    print("teacher_timestamps.json not found, make sure generate_keyposes worked.")
-    timestamps = {}
-
-#check checkpoints
-import asyncio
-import websockets
-from utilities.main_pipeline import interactive_training_session
-from utilities.youtube_downloader import get_checkpoint_boundary
-
-async def main():
+    print("Video processed! Waiting for Checkpoint from Chrome Extension...")
     point = await get_checkpoint_boundary(timestamps)
     
     async def stream(websocket):
-        print("Extension Connected!")
+        print("Extension Connected to Pipeline!")
         video_name = url
         await interactive_training_session(websocket, timestamps, video_name, point)
 
-    print("Starting websocket server on ws://localhost:8765")
+    print("Starting pipeline websocket server on ws://localhost:8765")
     async with websockets.serve(stream, "localhost", 8765):
         await asyncio.Future()
 
 if __name__ == "__main__":
-    asyncio.run(main()) #gets checkpoints
+    asyncio.run(main())

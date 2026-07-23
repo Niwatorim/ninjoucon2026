@@ -17,7 +17,7 @@ MATCH_THRESHOLD = 16.0
 NEAR_MATCH_THRESHOLD = 24.0
 REQUIRED_HOLD_FRAMES = 8
 JOINT_DEADZONE = 7.0
-SCORE_EMA_ALPHA = 0.35
+SCORE_EMA_ALPHA = 0.5 #used to be 0.3
 OPENCV_FRAME_FPS = 10
 OPENCV_FRAME_INTERVAL = 1.0 / OPENCV_FRAME_FPS
 OPENCV_FRAME_MAX_WIDTH = 720
@@ -72,7 +72,8 @@ def calculate_pose_match_score(target_angles, student_angles, joint_weights):
             continue
 
         raw_diff = abs(target_angle - student_angle)
-        adjusted_diff = 0.0 if raw_diff < JOINT_DEADZONE else raw_diff
+        # adjusted_diff = 0.0 if raw_diff < JOINT_DEADZONE else raw_diff
+        adjusted_diff = max(0, raw_diff - JOINT_DEADZONE * 0.5)
         weight = joint_weights.get(joint, 1.0)
 
         weighted_error += adjusted_diff * weight
@@ -104,7 +105,7 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
     global timestamp
     global state
 
-    pipeline = MedaiPipeline(enable_ble=True, ema_alpha=0.65)
+    pipeline = MedaiPipeline(enable_ble=True, ema_alpha=0.4) #used to be 0.65
     session_record = {}
     hand_recognizer = HandRecognizer()
     
@@ -128,6 +129,13 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
         with open("./keyposes/teacher_trajectories.json", "r") as f:
             teacher_trajectories = json.load(f)
         print(f"Loaded {len(teacher_trajectories)} teacher trajectories for DTW scoring")
+        for traj_key, trajectory in teacher_trajectories.items():
+            normalized_trajectory = []
+            for pose_frame in trajectory:
+                norm_frame, _ = pipeline.normalize_pose(pose_frame)
+                normalized_trajectory.append(pipeline.serialize_pose(norm_frame))
+            teacher_trajectories[traj_key] = normalized_trajectory
+        print(f"  ↳ Normalized all teacher trajectories by torso length")
     except FileNotFoundError:
         print("Warning: teacher_trajectories.json not found — DTW scoring disabled")
 
@@ -371,7 +379,8 @@ async def interactive_training_session(websocket, timestamps:dict, video_name:st
         if state == "PLAYING":
             annotated_student, pose, world_pose, smoothed_world = pipeline.mark_frame(student_frame)
             if smoothed_world is not None:
-                student_transition_poses.append(pipeline.serialize_pose(smoothed_world))
+                norm_student, _ = pipeline.normalize_pose(smoothed_world)
+                student_transition_poses.append(pipeline.serialize_pose(norm_student))
             # Listen to the websocket for TIME_UPDATE without blocking the webcam feed
             try:
                 message = await asyncio.wait_for(websocket.recv(), timeout=0.01)

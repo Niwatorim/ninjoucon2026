@@ -1,6 +1,7 @@
 import yt_dlp
 import asyncio
 import websockets
+import json
 
 
 def downloader(url:str) -> str:
@@ -17,41 +18,53 @@ def downloader(url:str) -> str:
             
         return filename
 
-async def wait_for_extension():
-    stop_future = asyncio.Future()
-    checkpoint_interval = None
-    
-    async def time_handler(websocket):
-        nonlocal checkpoint_interval
-        print("="*50)
-        print(" Waiting for Chrome Extension Checkpoint Time on ws://localhost:8000")
-        print(" Please use the slider on YouTube and click 'Save Checkpoint'.")
-        print("="*50)
-        try:
-            async for message in websocket:
-                if message == "no":
-                    print("[-] Checkpoint Cancelled by user. Proceeding without checkpoints.")
-                    stop_future.set_result(True)
-                    break
-                else:
-                    try:
-                        time_val = float(message)
-                        print(f"\n[+] Received Checkpoint Interval: {time_val}s\n")
-                        checkpoint_interval = time_val
-                        stop_future.set_result(True)
-                        break
-                    except ValueError:
-                        pass
-        except websockets.exceptions.ConnectionClosed:
-            pass
+url_future = None
+checkpoint_future = None
 
-    async with websockets.serve(time_handler, "localhost", 8000):
-        await stop_future
-        
-    return checkpoint_interval
+async def extension_handler(websocket):
+    global url_future, checkpoint_future
+    print("="*50)
+    print(" Extension Server running on ws://localhost:8000")
+    print(" Waiting for 'Add Pipeline' and 'Save Checkpoint' from Chrome...")
+    print("="*50)
+    try:
+        async for message in websocket:
+            try:
+                data = json.loads(message)
+                if data.get("type") == "URL":
+                    if url_future and not url_future.done():
+                        print(f"\n[+] Received URL from Chrome: {data['url']}")
+                        url_future.set_result(data['url'])
+                elif data.get("type") == "CHECKPOINT":
+                    if checkpoint_future and not checkpoint_future.done():
+                        val = data["time"]
+                        print(f"\n[+] Received Checkpoint Interval: {val}s")
+                        checkpoint_future.set_result(val)
+                elif data.get("type") == "CANCEL":
+                    if checkpoint_future and not checkpoint_future.done():
+                        print("\n[-] Checkpoint Cancelled by user. Proceeding without checkpoints.")
+                        checkpoint_future.set_result("no")
+            except json.JSONDecodeError:
+                pass
+    except websockets.exceptions.ConnectionClosed:
+        pass
+
+async def start_extension_server():
+    async with websockets.serve(extension_handler, "localhost", 8000):
+        await asyncio.Future()
+
+async def get_url_from_extension():
+    global url_future
+    url_future = asyncio.Future()
+    return await url_future
 
 async def get_checkpoint_boundary(timestamps):
-    checkpoint_interval = await wait_for_extension()
+    global checkpoint_future
+    checkpoint_future = asyncio.Future()
+    checkpoint_interval = await checkpoint_future
+    
+    if checkpoint_interval == "no":
+        checkpoint_interval = None
     
     if checkpoint_interval is not None and timestamps:
         chosen_key = "1"

@@ -11,3 +11,7 @@ youtube_extension.zip
 keyposes/*
 ./captured_vid.mp4
 ./requirements.txt
+UNITY_TEST
+rdetr_test
+freemocap
+bodpose3d
